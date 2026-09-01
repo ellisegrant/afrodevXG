@@ -73,6 +73,17 @@ mcp dev server.py
 - `tune_time_decay(competition_code, test_matches=100, seasons_back=3)` —
   grid-searches the time-decay constant ξ by backtest RPS.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite runs entirely offline - no API keys, no network - so it is safe to run
+anywhere and cannot flake on a rate limit. GitHub Actions runs it on every push
+against Python 3.11, 3.12 and 3.13.
+
 ## Claude Desktop
 
 Add to `claude_desktop_config.json`
