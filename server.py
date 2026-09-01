@@ -116,6 +116,14 @@ def get_match_probabilities(
     if away_resolved != away_team:
         notes.append(f"matched {away_team!r} to {away_resolved!r}")
 
+    counts = dixon_coles.team_match_counts(results)
+    for team in (home_resolved, away_resolved):
+        if counts.get(team, 0) < 10:
+            notes.append(
+                f"{team} has only {counts.get(team, 0)} matches of history - this "
+                "estimate is barely constrained and should not be trusted."
+            )
+
     prediction = dixon_coles.predict_match(model, home_resolved, away_resolved)
 
     probabilities = MatchProbabilities(
@@ -275,6 +283,7 @@ def scan_value(
     seasons_back: int = 3,
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
     bankroll: Optional[float] = None,
+    min_team_matches: int = 10,
 ) -> ValueScan:
     """Check every upcoming fixture in a competition and list the model's disagreements.
 
@@ -289,6 +298,9 @@ def scan_value(
         seasons_back: Seasons of history to fit the model on.
         target_book: Bookmaker whose price you would take.
         bankroll: If given, adds a quarter-Kelly stake per pick in the same units.
+        min_team_matches: Skip fixtures where either side has fewer matches of
+            history than this. Newly promoted teams otherwise produce huge,
+            meaningless edges.
     """
     competition_code = competition_code.upper().strip()
 
@@ -296,10 +308,13 @@ def scan_value(
     model = dixon_coles.get_model(competition_code, results)
     known = dixon_coles.model_teams(model)
 
+    counts = dixon_coles.team_match_counts(results)
+
     events = odds_api.fetch_events(competition_code)
     picks: list[ValuePick] = []
     sharp_books: set[str] = set()
     checked = 0
+    thin: set[str] = set()
 
     for event in events:
         market = odds_api.market_from_event(event, target_book=target_book)
@@ -309,6 +324,13 @@ def scan_value(
         home = _resolve_team(market["home_team"], known)
         away = _resolve_team(market["away_team"], known)
         if home is None or away is None:
+            continue
+
+        # A side with almost no history gets a barely-constrained estimate, which
+        # shows up as an enormous fake edge. Leave those fixtures out.
+        thin_sides = [t for t in (home, away) if counts.get(t, 0) < min_team_matches]
+        if thin_sides:
+            thin.update(thin_sides)
             continue
 
         try:
@@ -358,10 +380,13 @@ def scan_value(
                 )
             )
 
-    picks.sort(key=lambda pick: pick.edge, reverse=True)
+    # Expected value, not edge, is the decision-relevant number: the target
+    # book's margin can swallow a genuine edge entirely.
+    picks.sort(key=lambda pick: pick.expected_value_pct, reverse=True)
 
     notes = [
         "Edge is model probability minus the exchange's de-vigged probability.",
+        "Expected value is what the target book's price actually returns. A pick can show a positive edge and negative expected value when that book prices it worse than the exchange - those are not bets, they are near-misses.",
         "Backtesting shows this model beats a base-rate baseline but not the "
         "market, so treat any edge as unproven rather than as a signal.",
     ]
@@ -369,6 +394,12 @@ def scan_value(
         notes.append(
             "Stakes are quarter-Kelly and assume the model probability is correct; "
             "if the model is overconfident, Kelly overstakes badly."
+        )
+    if thin:
+        notes.append(
+            "Skipped fixtures involving "
+            + ", ".join(sorted(thin))
+            + f" - fewer than {min_team_matches} matches of history."
         )
     if not events:
         notes.append("The odds feed returned no upcoming fixtures for this competition.")

@@ -63,6 +63,10 @@ mcp dev server.py
 - `list_competitions()` — competition codes (PL, PD, BL1, SA, FL1, …).
 - `list_teams(competition_code)` — team names as the results feed spells them.
 - `get_upcoming_fixtures(competition_code, days_ahead=14)` — scheduled matches.
+- `scan_value(competition_code, min_edge=0.03, target_book="betway", bankroll=None)`
+  — every upcoming fixture where the model disagrees with the exchange, with
+  the target book's price, the best price anywhere, expected value and an
+  optional quarter-Kelly stake.
 - `backtest_model(competition_code, test_matches=100, seasons_back=3, xi=0.0018)`
   — walk-forward scoring on matches the model never saw: Ranked Probability
   Score against a base-rate baseline, plus a calibration table.

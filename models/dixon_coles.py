@@ -107,6 +107,15 @@ def model_teams(model) -> list[str]:
     return []
 
 
+def team_match_counts(results: list[dict]) -> dict[str, int]:
+    """How many matches of history each team has - thin samples give wild estimates."""
+    counts: dict[str, int] = {}
+    for match in results:
+        counts[match["home"]] = counts.get(match["home"], 0) + 1
+        counts[match["away"]] = counts.get(match["away"], 0) + 1
+    return counts
+
+
 def _grid_matrix(grid) -> np.ndarray:
     """The score-probability matrix behind a penaltyblog probability grid."""
     for attribute in ("goal_matrix", "grid", "probability_grid", "matrix", "_grid"):
