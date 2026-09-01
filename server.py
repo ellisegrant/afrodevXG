@@ -28,6 +28,7 @@ from schemas import (
     Fixture,
     LoggedPick,
     MatchProbabilities,
+    ModelComparison,
     PickReview,
     ValuePick,
     ValueScan,
@@ -278,7 +279,15 @@ def tune_time_decay(
     )
 
 
-_SELECTION_LABEL = {"home": "{home} win", "draw": "Draw", "away": "{away} win"}
+_SELECTION_LABEL = {
+    "home": "{home} win",
+    "draw": "Draw",
+    "away": "{away} win",
+    "over": "Over {line} goals",
+    "under": "Under {line} goals",
+    "yes": "Both teams to score",
+    "no": "Both teams not to score",
+}
 
 
 @mcp.tool()
@@ -289,6 +298,7 @@ def scan_value(
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
     bankroll: Optional[float] = None,
     min_team_matches: int = 4,
+    markets: str = odds_api.DEFAULT_MARKETS,
     log_picks: bool = True,
 ) -> ValueScan:
     """Check every upcoming fixture in a competition and list the model's disagreements.
@@ -307,6 +317,8 @@ def scan_value(
         min_team_matches: Skip fixtures where either side has fewer matches of
             history than this. Shrinkage already pulls thin teams toward the
             league average, so this only excludes the very sparsest.
+        markets: Odds API markets to pull. Each one costs a credit per request,
+            so the default is "h2h,totals"; add "btts" for both-teams-to-score.
         log_picks: Record the picks so review_picks can score them later.
     """
     competition_code = competition_code.upper().strip()
@@ -317,7 +329,7 @@ def scan_value(
 
     counts = dixon_coles.team_match_counts(results)
 
-    events = odds_api.fetch_events(competition_code)
+    events = odds_api.fetch_events(competition_code, markets=markets)
     picks: list[ValuePick] = []
     sharp_books: set[str] = set()
     checked = 0
@@ -353,42 +365,86 @@ def scan_value(
             "away": prediction["away_win"],
         }
 
-        for outcome, model_prob in model_probs.items():
-            edge = model_prob - market["fair"][outcome]
-            if edge < min_edge:
-                continue
-
-            price = market["target_odds"][outcome]
-            best = market["best_odds"][outcome]
-            # Expected return per unit staked, if the model probability is right.
-            expected_value = model_prob * price - 1.0
-            # Full Kelly: edge over the price, divided by the price's net return.
-            net_return = price - 1.0
-            kelly = (model_prob * price - 1.0) / net_return if net_return > 0 else 0.0
-
-            picks.append(
-                ValuePick(
-                    match=f"{market['home_team']} v {market['away_team']}",
-                    kickoff=market["commence_time"],
-                    selection=_SELECTION_LABEL[outcome].format(
-                        home=market["home_team"], away=market["away_team"]
-                    ),
-                    outcome=outcome,
-                    model_prob=model_prob,
-                    fair_prob=market["fair"][outcome],
-                    edge=edge,
-                    price=price,
-                    price_book=market["target_book"],
-                    best_price=best["odds"],
-                    best_price_book=best["book"],
-                    expected_value_pct=expected_value * 100.0,
-                    kelly_fraction=max(kelly, 0.0),
-                    stake=round(bankroll * max(kelly, 0.0) / 4.0, 2) if bankroll else None,
+        # Each market contributes its own selections off the same fit.
+        market_blocks = [
+            (
+                model_probs,
+                {
+                    "fair": market["fair"],
+                    "target_odds": market["target_odds"],
+                    "best_odds": market["best_odds"],
+                },
+            )
+        ]
+        if market.get("totals"):
+            line = market["totals"]["line"]
+            if line == 2.5:
+                over, under = prediction["over_2_5"], prediction["under_2_5"]
+            else:
+                over, under = dixon_coles.predict_totals(model, home, away, line)
+            market_blocks.append(({"over": over, "under": under}, market["totals"]))
+        if market.get("btts"):
+            market_blocks.append(
+                (
+                    {"yes": prediction["btts_yes"], "no": 1.0 - prediction["btts_yes"]},
+                    market["btts"],
                 )
             )
 
-    # Expected value, not edge, is the decision-relevant number: the target
-    # book's margin can swallow a genuine edge entirely.
+        for probabilities_by_outcome, block in market_blocks:
+            if not block:
+                continue
+            # Betway does not quote every market. Rather than drop those
+            # selections, price them at the best book that does quote them.
+            prices = block.get("target_odds") or {
+                outcome: best["odds"] for outcome, best in block["best_odds"].items()
+            }
+            if not prices:
+                continue
+
+            for outcome, model_prob in probabilities_by_outcome.items():
+                if outcome not in block["fair"] or outcome not in prices:
+                    continue
+
+                edge = model_prob - block["fair"][outcome]
+                if edge < min_edge:
+                    continue
+
+                price = prices[outcome]
+                best = block["best_odds"][outcome]
+                # Expected return per unit staked, if the model probability is right.
+                expected_value = model_prob * price - 1.0
+                # Full Kelly: edge over the price, divided by the price's net return.
+                net_return = price - 1.0
+                kelly = (model_prob * price - 1.0) / net_return if net_return > 0 else 0.0
+
+                picks.append(
+                    ValuePick(
+                        match=f"{market['home_team']} v {market['away_team']}",
+                        kickoff=market["commence_time"],
+                        selection=_SELECTION_LABEL[outcome].format(
+                            home=market["home_team"],
+                            away=market["away_team"],
+                            line=block.get("line", ""),
+                        ),
+                        outcome=outcome,
+                        model_prob=model_prob,
+                        fair_prob=block["fair"][outcome],
+                        edge=edge,
+                        price=price,
+                        price_book=(
+                            market["target_book"]
+                            if block.get("target_odds")
+                            else best["book"]
+                        ),
+                        best_price=best["odds"],
+                        best_price_book=best["book"],
+                        expected_value_pct=expected_value * 100.0,
+                        kelly_fraction=max(kelly, 0.0),
+                        stake=round(bankroll * max(kelly, 0.0) / 4.0, 2) if bankroll else None,
+                    )
+                )
+
     picks.sort(key=lambda pick: pick.expected_value_pct, reverse=True)
 
     notes = [
@@ -586,6 +642,40 @@ def review_picks(competition_code: Optional[str] = None, refresh_odds: bool = Tr
             "not have caught up, or the fixture names did not match."
         )
     return review
+
+
+@mcp.tool()
+def compare_models(
+    competition_code: str = "PL",
+    test_matches: int = 100,
+    seasons_back: int = 3,
+    models: Optional[list[str]] = None,
+) -> ModelComparison:
+    """Backtest every available goal model on the same matches and rank them.
+
+    Dixon-Coles is the default because it is the standard choice, not because it
+    has been shown to suit any particular league. This checks that assumption.
+
+    Args:
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        test_matches: Held-out matches to score each model on.
+        seasons_back: Seasons of history to draw on.
+        models: Subset to try. Default runs all of them, which is slow.
+    """
+    competition_code = competition_code.upper().strip()
+    results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
+    report = backtest_api.compare_models(results, model_names=models, test_matches=test_matches)
+
+    return ModelComparison(
+        competition=competition_code,
+        notes=[
+            "Lower RPS is better. Differences under ~0.002 are noise at this sample "
+            "size - prefer the simpler model when the gap is that small.",
+            "A model that errors out is reported rather than hidden; some need more "
+            "data than a single league season provides.",
+        ],
+        **report,
+    )
 
 
 if __name__ == "__main__":

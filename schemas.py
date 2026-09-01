@@ -134,7 +134,9 @@ class ValuePick(BaseModel):
     match: str
     kickoff: str
     selection: str = Field(..., description="Human-readable pick, e.g. 'Arsenal win'.")
-    outcome: str = Field(..., description="home, draw or away.")
+    outcome: str = Field(
+        ..., description="home, draw, away, over, under, yes or no."
+    )
 
     model_prob: float
     fair_prob: float = Field(..., description="De-vigged probability from the sharp book.")
@@ -223,4 +225,25 @@ class PickReview(BaseModel):
     clv_positive_rate: Optional[float] = None
 
     picks: list[LoggedPick] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ModelTrial(BaseModel):
+    model: str
+    model_rps: Optional[float] = None
+    hit_rate: Optional[float] = None
+    matches_scored: Optional[int] = None
+    seconds: Optional[float] = None
+    error: Optional[str] = None
+
+
+class ModelComparison(BaseModel):
+    """Every available goal model, ranked on the same held-out matches."""
+
+    competition: str
+    trials: list[ModelTrial]
+    best_model: str
+    best_rps: float
+    baseline_rps: float
+    current_default: str = "dixon_coles"
     notes: list[str] = Field(default_factory=list)

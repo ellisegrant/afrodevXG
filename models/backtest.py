@@ -9,6 +9,7 @@ harder than a plain log loss does.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -81,6 +82,7 @@ def walk_forward(
     test_matches: int = 100,
     xi: float = dixon_coles.DEFAULT_XI,
     refit_every: int = 10,
+    model_name: str = "dixon_coles",
 ) -> dict[str, Any]:
     """Predict the last `test_matches` using only matches played before each one.
 
@@ -104,7 +106,7 @@ def walk_forward(
     for index in range(split, len(ordered)):
         match = ordered[index]
         if model is None or (index - split) % refit_every == 0:
-            model = dixon_coles.fit_model(ordered[:index], xi=xi)
+            model = dixon_coles.fit_model(ordered[:index], xi=xi, model_name=model_name)
             known = set(dixon_coles.model_teams(model))
 
         if match["home"] not in known or match["away"] not in known:
@@ -153,6 +155,7 @@ def walk_forward(
 
     return {
         "xi": xi,
+        "model_name": model_name,
         "matches_trained_on": split,
         "matches_scored": len(records),
         "matches_skipped": skipped,
@@ -202,5 +205,51 @@ def tune_xi(
         "best_xi": best["xi"],
         "best_rps": best["model_rps"],
         "current_default": dixon_coles.DEFAULT_XI,
+        "baseline_rps": baseline,
+    }
+
+
+def compare_models(
+    results: list[dict],
+    model_names: Optional[list[str]] = None,
+    test_matches: int = 100,
+    refit_every: int = 10,
+) -> dict[str, Any]:
+    """Rank the available goal models on the same held-out matches.
+
+    Dixon-Coles is the default because it is the standard, not because it has
+    been shown to be the best fit for any particular league.
+    """
+    model_names = model_names or list(dixon_coles.MODEL_CLASSES)
+
+    trials, baseline = [], 0.0
+    for name in model_names:
+        started = time.monotonic()
+        try:
+            result = walk_forward(
+                results, test_matches=test_matches, refit_every=refit_every, model_name=name
+            )
+        except Exception as exc:  # a model that will not fit is a result too
+            log.warning("%s failed: %s", name, exc)
+            trials.append({"model": name, "error": str(exc)[:200]})
+            continue
+        baseline = result["baseline_rps"]
+        trials.append(
+            {
+                "model": name,
+                "model_rps": result["model_rps"],
+                "hit_rate": result["hit_rate"],
+                "matches_scored": result["matches_scored"],
+                "seconds": round(time.monotonic() - started, 1),
+            }
+        )
+        log.info("%s -> RPS %.5f", name, result["model_rps"])
+
+    scored = [trial for trial in trials if "model_rps" in trial]
+    best = min(scored, key=lambda trial: trial["model_rps"]) if scored else None
+    return {
+        "trials": trials,
+        "best_model": best["model"] if best else "none",
+        "best_rps": best["model_rps"] if best else 0.0,
         "baseline_rps": baseline,
     }

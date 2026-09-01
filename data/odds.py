@@ -49,7 +49,7 @@ DEFAULT_TARGET_BOOK = "betway"
 # Each market costs one credit per region per request, so keep the default lean.
 DEFAULT_MARKETS = "h2h,totals"
 
-# The only totals line worth modelling here: the model reports over/under 2.5.
+# Preferred goals line when books quote more than one; the model can price any.
 TOTALS_LINE = 2.5
 
 
@@ -329,16 +329,18 @@ def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     entry["odds"] = prices
 
             elif key == "totals":
-                prices = {}
+                by_line: dict[float, dict[str, float]] = {}
                 for outcome in outcomes:
                     price, point = outcome.get("price"), outcome.get("point")
-                    if not price or point != TOTALS_LINE:
-                        continue
                     side = outcome.get("name", "").lower()
-                    if side in ("over", "under"):
-                        prices[side] = float(price)
-                if len(prices) == 2:
-                    entry["totals"] = prices
+                    if not price or point is None or side not in ("over", "under"):
+                        continue
+                    by_line.setdefault(float(point), {})[side] = float(price)
+                complete = {
+                    line: prices for line, prices in by_line.items() if len(prices) == 2
+                }
+                if complete:
+                    entry["totals"] = complete
 
             elif key == "btts":
                 prices = {}
@@ -368,6 +370,31 @@ def _best_prices(
             if outcome not in best or price > best[outcome]["odds"]:
                 best[outcome] = {"odds": price, "book": book["title"], "key": key}
     return best
+
+
+def _pick_totals_line(books: dict[str, dict[str, Any]]) -> Optional[float]:
+    """The goals line the most books are quoting, preferring 2.5 on a tie."""
+    counts: dict[float, int] = {}
+    for book in books.values():
+        for line in (book.get("totals") or {}):
+            counts[line] = counts.get(line, 0) + 1
+    if not counts:
+        return None
+    most = max(counts.values())
+    candidates = [line for line, count in counts.items() if count == most]
+    return TOTALS_LINE if TOTALS_LINE in candidates else min(candidates)
+
+
+def _flatten_totals(
+    books: dict[str, dict[str, Any]], line: float
+) -> dict[str, dict[str, Any]]:
+    """Books quoting one specific goals line, shaped like any other two-way market."""
+    flattened = {}
+    for key, book in books.items():
+        prices = (book.get("totals") or {}).get(line)
+        if prices:
+            flattened[key] = {"title": book["title"], "totals": prices}
+    return flattened
 
 
 def _side_market(
@@ -428,6 +455,7 @@ def market_from_event(
         sharp = books[sharp_key]
 
     raw_total = sum(1.0 / price for price in sharp["odds"].values())
+    totals_line = _pick_totals_line(all_books)
 
     return {
         "home_team": event.get("home_team", ""),
@@ -441,8 +469,14 @@ def market_from_event(
         "target_odds": books[target_book]["odds"] if target_book in books else None,
         "best_odds": _best_prices(books),
         "books_seen": len(books),
-        "totals_line": TOTALS_LINE,
-        "totals": _side_market(all_books, "totals", target_book),
+        "totals_line": totals_line,
+        "totals": (
+            {**_side_market(_flatten_totals(all_books, totals_line), "totals", target_book),
+             "line": totals_line}
+            if totals_line is not None
+            and _side_market(_flatten_totals(all_books, totals_line), "totals", target_book)
+            else None
+        ),
         "btts": _side_market(all_books, "btts", target_book),
     }
 

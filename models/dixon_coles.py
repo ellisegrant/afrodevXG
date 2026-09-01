@@ -24,6 +24,17 @@ DEFAULT_XI = 0.0018
 # strength estimate that shows up as a huge fake edge.
 SHRINKAGE_K = 8.0
 
+# Every penaltyblog goal model takes the same constructor arguments, so they are
+# interchangeable here and can be ranked against each other by backtest.
+MODEL_CLASSES = {
+    "dixon_coles": "DixonColesGoalModel",
+    "poisson": "PoissonGoalsModel",
+    "bivariate_poisson": "BivariatePoissonGoalModel",
+    "negative_binomial": "NegativeBinomialGoalModel",
+    "zero_inflated_poisson": "ZeroInflatedPoissonGoalsModel",
+    "weibull_copula": "WeibullCopulaGoalsModel",
+}
+
 # Refit at most once a day per league.
 MODEL_TTL_SECONDS = 24 * 3600.0
 
@@ -51,9 +62,17 @@ def _time_weights(dates: list[str], xi: float) -> Optional[np.ndarray]:
 
 
 def fit_model(
-    results: list[dict], xi: float = DEFAULT_XI, shrinkage_k: float = SHRINKAGE_K
+    results: list[dict],
+    xi: float = DEFAULT_XI,
+    shrinkage_k: float = SHRINKAGE_K,
+    model_name: str = "dixon_coles",
 ):
-    """Fit a Dixon-Coles model on `results` from `data.fixtures.get_recent_results`."""
+    """Fit a goal model on `results` from `data.fixtures.get_recent_results`."""
+    if model_name not in MODEL_CLASSES:
+        raise ModelError(
+            f"unknown model {model_name!r}. Available: {', '.join(MODEL_CLASSES)}"
+        )
+    model_class = getattr(pb.models, MODEL_CLASSES[model_name])
     if not results:
         raise ModelError("no historical results to fit on")
     if len(results) < 40:
@@ -68,21 +87,20 @@ def fit_model(
     started = time.monotonic()
     try:
         if weights is not None:
-            model = pb.models.DixonColesGoalModel(
-                goals_home, goals_away, teams_home, teams_away, weights
-            )
+            model = model_class(goals_home, goals_away, teams_home, teams_away, weights)
         else:
-            model = pb.models.DixonColesGoalModel(
-                goals_home, goals_away, teams_home, teams_away
-            )
+            model = model_class(goals_home, goals_away, teams_home, teams_away)
         model.fit()
     except Exception as exc:  # penaltyblog raises plain exceptions on bad input
-        raise ModelError(f"Dixon-Coles fit failed: {exc}") from exc
+        raise ModelError(f"{model_name} fit failed: {exc}") from exc
 
     if shrinkage_k > 0:
         _shrink_team_strengths(model, team_match_counts(results), shrinkage_k)
 
-    log.info("fitted Dixon-Coles on %d matches in %.1fs", len(results), time.monotonic() - started)
+    log.info(
+        "fitted %s on %d matches in %.1fs",
+        model_name, len(results), time.monotonic() - started,
+    )
     return model
 
 
@@ -117,9 +135,14 @@ def _shrink_team_strengths(model, counts: dict[str, int], k: float) -> None:
     model._params = params
 
 
-def get_model(competition_code: str, results: list[dict], xi: float = DEFAULT_XI):
+def get_model(
+    competition_code: str,
+    results: list[dict],
+    xi: float = DEFAULT_XI,
+    model_name: str = "dixon_coles",
+):
     """Fitted model for a league, refitted at most once per `MODEL_TTL_SECONDS`."""
-    key = f"{competition_code.upper()}:{xi}"
+    key = f"{competition_code.upper()}:{xi}:{model_name}"
     entry = _MODEL_CACHE.get(key)
     if (
         entry
@@ -129,7 +152,7 @@ def get_model(competition_code: str, results: list[dict], xi: float = DEFAULT_XI
         log.info("using cached model for %s", key)
         return entry["model"]
 
-    model = fit_model(results, xi=xi)
+    model = fit_model(results, xi=xi, model_name=model_name)
     _MODEL_CACHE[key] = {
         "model": model,
         "fitted_at": time.time(),
@@ -206,6 +229,15 @@ def _btts(grid) -> float:
             return float(value)
     matrix = _grid_matrix(grid)
     return float(matrix[1:, 1:].sum())
+
+
+def predict_totals(model, home: str, away: str, line: float) -> tuple[float, float]:
+    """(over, under) probabilities for an arbitrary goals line."""
+    try:
+        grid = model.predict(home, away)
+    except Exception as exc:
+        raise ModelError(f"prediction failed for {home} v {away}: {exc}") from exc
+    return _totals(grid, line)
 
 
 def predict_match(model, home: str, away: str) -> dict[str, float]:
