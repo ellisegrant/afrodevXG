@@ -29,6 +29,10 @@ logging.basicConfig(
     stream=sys.stderr,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs full request URLs at INFO, and The Odds API takes its key as a
+# query parameter - that would write the key into every log file.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 log = logging.getLogger("football-mcp")
 
 mcp = FastMCP("football-analytics")
