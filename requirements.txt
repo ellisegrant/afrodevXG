@@ -1,0 +1,10 @@
+mcp[cli]>=1.28,<2
+penaltyblog
+httpx
+pydantic
+python-dotenv
+
+# cryptography (pulled in by mcp -> pyjwt[crypto]) has no prebuilt wheel for
+# CPython 3.14 on macOS x86_64 above 48.x, and building it from source needs a
+# Rust toolchain. Pin to the last version that ships a usable wheel here.
+cryptography<49
