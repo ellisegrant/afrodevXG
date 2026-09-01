@@ -108,9 +108,26 @@ total 1.0, giving fair market probabilities. The edge is then
 - Models are cached per league and refit at most once a day. API responses are
   cached on disk under `cache/`.
 
+## What the backtest has found so far
+
+Walk-forward RPS over recent seasons (lower is better):
+
+| League | Model | Base-rate baseline |
+| --- | --- | --- |
+| Premier League (248 matches) | 0.2063 | 0.2258 |
+| La Liga (247 matches) | 0.2095 | 0.2226 |
+
+**Time decay is a dead end.** ξ was grid-searched on both leagues at two sample
+sizes. On 98 PL matches ξ=0.005 looked best; on 248 PL matches the winner moved
+to ξ=0.003, and on La Liga *no decay at all* (ξ=0.0) scored best, with RPS
+rising monotonically as ξ grew. The spread across the whole grid is under 0.002
+RPS — inside the noise. The default stays at 0.0018; effort belongs elsewhere.
+
+Note that hit rate and RPS disagree (ξ=0.01 picks more winners in both leagues
+while scoring worse). Hit rate ignores confidence — trust RPS.
+
 ## Roadmap
 
-- Time-decay (ξ) tuning by ranked probability score.
 - xG-based λ via Understat (penaltyblog scrapers).
 - Live/in-play tool (score + minute-adjusted Poisson).
 - Other sports.
