@@ -19,8 +19,14 @@ from mcp.server.fastmcp import FastMCP
 
 from data import fixtures as fixtures_api
 from data import odds as odds_api
+from models import backtest as backtest_api
 from models import dixon_coles
-from schemas import Fixture, MatchProbabilities
+from schemas import (
+    BacktestResult,
+    Fixture,
+    MatchProbabilities,
+    XiTuningResult,
+)
 
 # Claude Desktop launches this server from an arbitrary working directory,
 # so point dotenv at the .env sitting next to this file.
@@ -170,6 +176,76 @@ def get_upcoming_fixtures(
             competition_code, days_ahead=days_ahead
         )
     ]
+
+
+@mcp.tool()
+def backtest_model(
+    competition_code: str = "PL",
+    test_matches: int = 100,
+    seasons_back: int = 3,
+    xi: float = dixon_coles.DEFAULT_XI,
+) -> BacktestResult:
+    """Score the model on past matches it was not trained on.
+
+    Walk-forward: each test match is predicted using only matches played before
+    it. Reports Ranked Probability Score (lower is better) against a base-rate
+    baseline, plus a calibration table.
+
+    Args:
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        test_matches: How many of the most recent matches to score.
+        seasons_back: How many seasons of history to draw on.
+        xi: Time-decay constant. 0 weights every match equally.
+    """
+    competition_code = competition_code.upper().strip()
+    results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
+    report = backtest_api.walk_forward(results, test_matches=test_matches, xi=xi)
+
+    notes = [
+        "RPS is Ranked Probability Score: lower is better, 0 is perfect.",
+        "Baseline is the empirical home/draw/away rate over the training window.",
+        "Bookmaker comparison is not included: historical odds need a paid "
+        "Odds API plan, so only live fixtures can be compared to the market.",
+    ]
+    if report["matches_skipped"]:
+        notes.append(
+            f"{report['matches_skipped']} matches skipped - a team had no prior history."
+        )
+
+    return BacktestResult(
+        competition=competition_code,
+        notes=notes,
+        **{key: report[key] for key in (
+            "xi", "matches_trained_on", "matches_scored", "matches_skipped",
+            "model_rps", "baseline_rps", "rps_improvement_pct", "hit_rate",
+            "baseline_rates", "calibration",
+        )},
+    )
+
+
+@mcp.tool()
+def tune_time_decay(
+    competition_code: str = "PL",
+    test_matches: int = 100,
+    seasons_back: int = 3,
+) -> XiTuningResult:
+    """Grid-search the time-decay constant and report which value scores best.
+
+    Runs a full backtest per candidate, so this takes appreciably longer than a
+    single prediction.
+    """
+    competition_code = competition_code.upper().strip()
+    results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
+    report = backtest_api.tune_xi(results, test_matches=test_matches)
+
+    return XiTuningResult(
+        competition=competition_code,
+        notes=[
+            "Lower RPS is better. A win of less than ~0.002 RPS is noise at this "
+            "sample size, not a reason to change the default.",
+        ],
+        **report,
+    )
 
 
 if __name__ == "__main__":

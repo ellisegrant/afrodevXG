@@ -63,6 +63,11 @@ mcp dev server.py
 - `list_competitions()` — competition codes (PL, PD, BL1, SA, FL1, …).
 - `list_teams(competition_code)` — team names as the results feed spells them.
 - `get_upcoming_fixtures(competition_code, days_ahead=14)` — scheduled matches.
+- `backtest_model(competition_code, test_matches=100, seasons_back=3, xi=0.0018)`
+  — walk-forward scoring on matches the model never saw: Ranked Probability
+  Score against a base-rate baseline, plus a calibration table.
+- `tune_time_decay(competition_code, test_matches=100, seasons_back=3)` —
+  grid-searches the time-decay constant ξ by backtest RPS.
 
 ## Claude Desktop
 
@@ -93,6 +98,9 @@ total 1.0, giving fair market probabilities. The edge is then
 
 ## Caveats
 
+- Historical bookmaker odds need a paid Odds API plan, so `backtest_model`
+  scores against a base-rate baseline, not against the market. Only live
+  fixtures can be compared to real odds.
 - Dixon-Coles gains over plain Poisson are real but small. De-vigged sharp odds
   are a hard baseline — treat outputs as probabilities, not certainties.
 - Team-name spellings differ between the two APIs; `data/odds.py` normalizes

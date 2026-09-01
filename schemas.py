@@ -63,3 +63,53 @@ class Fixture(BaseModel):
     competition: str
     utc_date: str
     matchday: Optional[int] = None
+
+
+class CalibrationBucket(BaseModel):
+    """One probability band: what the model said vs what actually happened."""
+
+    bucket: str
+    predicted_mean: float
+    observed_rate: float
+    n: int
+
+
+class BacktestResult(BaseModel):
+    """Walk-forward scoring of the model against a naive baseline."""
+
+    competition: str
+    xi: float
+    matches_trained_on: int
+    matches_scored: int
+    matches_skipped: int
+
+    # Ranked Probability Score - lower is better.
+    model_rps: float
+    baseline_rps: float
+    rps_improvement_pct: float = Field(
+        ..., description="Percent by which the model beats the base-rate baseline."
+    )
+
+    hit_rate: float = Field(..., description="Share of matches where the most likely outcome won.")
+    baseline_rates: dict[str, float]
+    calibration: list[CalibrationBucket]
+    notes: list[str] = Field(default_factory=list)
+
+
+class XiTrial(BaseModel):
+    xi: float
+    model_rps: float
+    hit_rate: float
+    matches_scored: int
+
+
+class XiTuningResult(BaseModel):
+    """Grid search over the Dixon-Coles time-decay constant."""
+
+    competition: str
+    trials: list[XiTrial]
+    best_xi: float
+    best_rps: float
+    current_default: float
+    baseline_rps: float
+    notes: list[str] = Field(default_factory=list)
