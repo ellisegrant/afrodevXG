@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import logging
 import sys
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -21,7 +22,9 @@ from data import odds as odds_api
 from models import dixon_coles
 from schemas import Fixture, MatchProbabilities
 
-load_dotenv()
+# Claude Desktop launches this server from an arbitrary working directory,
+# so point dotenv at the .env sitting next to this file.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # stdio transport owns stdout - every log line must go to stderr.
 logging.basicConfig(

@@ -29,11 +29,16 @@ variables, never hard-coded.
 
 ## Setup
 
+Anyone can run this — it's a local server, so you bring your own free API
+keys and nothing is shared between users.
+
 ```bash
+git clone https://github.com/ellisegrant/afrodevXG.git
+cd afrodevXG
 python3 -m venv venv
 source venv/bin/activate            # Windows: venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env                # then paste real keys
+cp .env.example .env                # then paste your own keys
 ```
 
 Keys:
