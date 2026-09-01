@@ -124,8 +124,9 @@ def get_match_probabilities(
     for team in (home_resolved, away_resolved):
         if counts.get(team, 0) < 10:
             notes.append(
-                f"{team} has only {counts.get(team, 0)} matches of history - this "
-                "estimate is barely constrained and should not be trusted."
+                f"{team} has only {counts.get(team, 0)} matches of history. Its "
+                "strength is shrunk toward the league average, so this estimate "
+                "reflects the league more than the team."
             )
 
     prediction = dixon_coles.predict_match(model, home_resolved, away_resolved)
@@ -287,7 +288,7 @@ def scan_value(
     seasons_back: int = 3,
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
     bankroll: Optional[float] = None,
-    min_team_matches: int = 10,
+    min_team_matches: int = 4,
     log_picks: bool = True,
 ) -> ValueScan:
     """Check every upcoming fixture in a competition and list the model's disagreements.
@@ -304,8 +305,8 @@ def scan_value(
         target_book: Bookmaker whose price you would take.
         bankroll: If given, adds a quarter-Kelly stake per pick in the same units.
         min_team_matches: Skip fixtures where either side has fewer matches of
-            history than this. Newly promoted teams otherwise produce huge,
-            meaningless edges.
+            history than this. Shrinkage already pulls thin teams toward the
+            league average, so this only excludes the very sparsest.
         log_picks: Record the picks so review_picks can score them later.
     """
     competition_code = competition_code.upper().strip()

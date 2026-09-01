@@ -46,6 +46,12 @@ SHARP_BOOKS = ["betfair_ex_uk", "smarkets", "matchbook", "pinnacle", "betfair_sb
 # The book you would actually place the bet with - the price you can really get.
 DEFAULT_TARGET_BOOK = "betway"
 
+# Each market costs one credit per region per request, so keep the default lean.
+DEFAULT_MARKETS = "h2h,totals"
+
+# The only totals line worth modelling here: the model reports over/under 2.5.
+TOTALS_LINE = 2.5
+
 
 # Searched in order when the caller does not say which competition it is.
 _DEFAULT_SPORT_SEARCH = [
@@ -163,9 +169,9 @@ def _regions() -> str:
     return os.environ.get("ODDS_REGIONS", "uk").strip() or "uk"
 
 
-def _fetch_sport(sport_key: str) -> list[dict[str, Any]]:
-    """All upcoming h2h markets for one sport key (1 credit per region)."""
-    cache_key = f"odds_{sport_key}_{_regions()}"
+def _fetch_sport(sport_key: str, markets: str = DEFAULT_MARKETS) -> list[dict[str, Any]]:
+    """Upcoming markets for one sport key (one credit per market per region)."""
+    cache_key = f"odds_{sport_key}_{_regions()}_{markets}"
     cached = _cache.load(cache_key, _ODDS_TTL)
     if cached is not None:
         return cached
@@ -177,7 +183,7 @@ def _fetch_sport(sport_key: str) -> list[dict[str, Any]]:
             params={
                 "apiKey": _api_key(),
                 "regions": _regions(),
-                "markets": "h2h",
+                "markets": markets,
                 "oddsFormat": "decimal",
             },
             timeout=30.0,
@@ -286,42 +292,112 @@ def fetch_odds(
 
 
 def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Per-bookmaker 1X2 prices for one event, keyed by bookmaker key."""
+    """Per-bookmaker prices for one event, keyed by bookmaker key.
+
+    Each entry carries whichever of the 1X2, over/under and both-teams-to-score
+    markets that book is quoting.
+    """
     home_name = event.get("home_team", "")
     away_name = event.get("away_team", "")
 
     books: dict[str, dict[str, Any]] = {}
     for bookmaker in event.get("bookmakers", []):
-        prices: dict[str, float] = {}
+        entry: dict[str, Any] = {
+            "title": bookmaker.get("title", bookmaker.get("key", "")),
+            "odds": None,
+            "totals": None,
+            "btts": None,
+        }
+
         for market in bookmaker.get("markets", []):
-            if market.get("key") != "h2h":
-                continue
-            for outcome in market.get("outcomes", []):
-                name, price = outcome.get("name", ""), outcome.get("price")
-                if not price:
-                    continue
-                if name.lower() == "draw":
-                    prices["draw"] = float(price)
-                elif _similarity(name, home_name) >= 0.9:
-                    prices["home"] = float(price)
-                elif _similarity(name, away_name) >= 0.9:
-                    prices["away"] = float(price)
-        if len(prices) == 3:
-            books[bookmaker.get("key", "")] = {
-                "title": bookmaker.get("title", bookmaker.get("key", "")),
-                "odds": prices,
-            }
+            key = market.get("key")
+            outcomes = market.get("outcomes", [])
+
+            if key == "h2h":
+                prices: dict[str, float] = {}
+                for outcome in outcomes:
+                    name, price = outcome.get("name", ""), outcome.get("price")
+                    if not price:
+                        continue
+                    if name.lower() == "draw":
+                        prices["draw"] = float(price)
+                    elif _similarity(name, home_name) >= 0.9:
+                        prices["home"] = float(price)
+                    elif _similarity(name, away_name) >= 0.9:
+                        prices["away"] = float(price)
+                if len(prices) == 3:
+                    entry["odds"] = prices
+
+            elif key == "totals":
+                prices = {}
+                for outcome in outcomes:
+                    price, point = outcome.get("price"), outcome.get("point")
+                    if not price or point != TOTALS_LINE:
+                        continue
+                    side = outcome.get("name", "").lower()
+                    if side in ("over", "under"):
+                        prices[side] = float(price)
+                if len(prices) == 2:
+                    entry["totals"] = prices
+
+            elif key == "btts":
+                prices = {}
+                for outcome in outcomes:
+                    price = outcome.get("price")
+                    side = outcome.get("name", "").lower()
+                    if price and side in ("yes", "no"):
+                        prices[side] = float(price)
+                if len(prices) == 2:
+                    entry["btts"] = prices
+
+        if entry["odds"] or entry["totals"] or entry["btts"]:
+            books[bookmaker.get("key", "")] = entry
     return books
 
 
-def _best_prices(books: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Highest price available on each outcome, and who is offering it."""
+def _best_prices(
+    books: dict[str, dict[str, Any]], market: str = "odds"
+) -> dict[str, dict[str, Any]]:
+    """Highest price available on each outcome of one market, and who offers it."""
     best: dict[str, dict[str, Any]] = {}
     for key, book in books.items():
-        for outcome, price in book["odds"].items():
+        prices = book.get(market)
+        if not prices:
+            continue
+        for outcome, price in prices.items():
             if outcome not in best or price > best[outcome]["odds"]:
                 best[outcome] = {"odds": price, "book": book["title"], "key": key}
     return best
+
+
+def _side_market(
+    books: dict[str, dict[str, Any]], market: str, target_book: str
+) -> Optional[dict[str, Any]]:
+    """Sharp baseline, target price and best price for a two-way market."""
+    quoting = {key: book for key, book in books.items() if book.get(market)}
+    if not quoting:
+        return None
+
+    sharp_key = next((key for key in SHARP_BOOKS if key in quoting), None)
+    if sharp_key is None:
+        outcomes = next(iter(quoting.values()))[market].keys()
+        averaged = {
+            outcome: sum(book[market][outcome] for book in quoting.values()) / len(quoting)
+            for outcome in outcomes
+        }
+        sharp = {"title": f"average of {len(quoting)} books", market: averaged}
+    else:
+        sharp = quoting[sharp_key]
+
+    target = quoting.get(target_book)
+    return {
+        "sharp_book": sharp["title"],
+        "sharp_odds": sharp[market],
+        "fair": devig(sharp[market]),
+        "target_odds": target[market] if target else None,
+        "best_odds": _best_prices(quoting, market),
+        "books_seen": len(quoting),
+    }
 
 
 def market_from_event(
@@ -332,7 +408,8 @@ def market_from_event(
     The sharp book (an exchange where possible) is de-vigged to give the fair
     market probability; the target book is simply the price you could take.
     """
-    books = _book_prices(event)
+    all_books = _book_prices(event)
+    books = {key: book for key, book in all_books.items() if book.get("odds")}
     if not books:
         return None
 
@@ -364,16 +441,21 @@ def market_from_event(
         "target_odds": books[target_book]["odds"] if target_book in books else None,
         "best_odds": _best_prices(books),
         "books_seen": len(books),
+        "totals_line": TOTALS_LINE,
+        "totals": _side_market(all_books, "totals", target_book),
+        "btts": _side_market(all_books, "btts", target_book),
     }
 
 
-def fetch_events(competition_code: str) -> list[dict[str, Any]]:
+def fetch_events(
+    competition_code: str, markets: str = DEFAULT_MARKETS
+) -> list[dict[str, Any]]:
     """Every upcoming event with odds for a competition (one credit, then cached)."""
     sport_key = SPORT_KEYS.get(competition_code.upper().strip())
     if not sport_key:
         log.warning("no Odds API sport key mapped for %s", competition_code)
         return []
-    return _fetch_sport(sport_key)
+    return _fetch_sport(sport_key, markets=markets)
 
 
 def fetch_market(
