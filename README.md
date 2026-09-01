@@ -1,8 +1,8 @@
-# Football Analytics MCP
+# afrodevXG
 
-A personal, local MCP server that estimates football (soccer) match
-probabilities with a Dixon-Coles model and compares them to real bookmaker odds
-to spot value. Built for use from Claude Desktop.
+Football match probabilities as an MCP server. A personal, local tool that fits a
+Dixon-Coles model to recent results and compares its estimates to real bookmaker
+odds to spot value. Built for use from Claude Desktop.
 
 Personal, non-commercial probability analysis. No scraping — all data comes
 from documented APIs.
@@ -68,8 +68,8 @@ Add to `claude_desktop_config.json`
 {
   "mcpServers": {
     "football-analytics": {
-      "command": "/absolute/path/to/football-mcp/venv/bin/python",
-      "args": ["/absolute/path/to/football-mcp/server.py"],
+      "command": "/Users/ellisegrantboamah/Desktop/afrodevXG/venv/bin/python",
+      "args": ["/Users/ellisegrantboamah/Desktop/afrodevXG/server.py"],
       "env": {
         "FOOTBALL_DATA_API_KEY": "your-key",
         "ODDS_API_KEY": "your-key"
