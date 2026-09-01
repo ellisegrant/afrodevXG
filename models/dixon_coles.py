@@ -19,6 +19,11 @@ log = logging.getLogger(__name__)
 # Dixon-Coles time decay. 0.0018/day halves a match's weight after ~1 year.
 DEFAULT_XI = 0.0018
 
+# Matches of history a team needs before its own record outweighs the league
+# average. A promoted side with two games otherwise gets a wild, unconstrained
+# strength estimate that shows up as a huge fake edge.
+SHRINKAGE_K = 8.0
+
 # Refit at most once a day per league.
 MODEL_TTL_SECONDS = 24 * 3600.0
 
@@ -45,7 +50,9 @@ def _time_weights(dates: list[str], xi: float) -> Optional[np.ndarray]:
     return np.exp(-xi * days)
 
 
-def fit_model(results: list[dict], xi: float = DEFAULT_XI):
+def fit_model(
+    results: list[dict], xi: float = DEFAULT_XI, shrinkage_k: float = SHRINKAGE_K
+):
     """Fit a Dixon-Coles model on `results` from `data.fixtures.get_recent_results`."""
     if not results:
         raise ModelError("no historical results to fit on")
@@ -72,8 +79,42 @@ def fit_model(results: list[dict], xi: float = DEFAULT_XI):
     except Exception as exc:  # penaltyblog raises plain exceptions on bad input
         raise ModelError(f"Dixon-Coles fit failed: {exc}") from exc
 
+    if shrinkage_k > 0:
+        _shrink_team_strengths(model, team_match_counts(results), shrinkage_k)
+
     log.info("fitted Dixon-Coles on %d matches in %.1fs", len(results), time.monotonic() - started)
     return model
+
+
+
+def _shrink_team_strengths(model, counts: dict[str, int], k: float) -> None:
+    """Pull thinly-observed teams toward the league average, in place.
+
+    Each team's attack and defence coefficient is blended with the league mean
+    using weight n/(n+k): a team with k matches sits halfway, a team with many
+    matches keeps essentially its own estimate.
+    """
+    teams = [str(team) for team in getattr(model, "teams", [])]
+    params = getattr(model, "_params", None)
+    if not teams or params is None or k <= 0:
+        return
+
+    params = np.asarray(params, dtype=float).copy()
+    n = len(teams)
+    if params.size < 2 * n:
+        log.warning("unexpected parameter layout, skipping shrinkage")
+        return
+
+    attack, defence = params[:n], params[n : 2 * n]
+    mean_attack, mean_defence = float(attack.mean()), float(defence.mean())
+
+    for index, team in enumerate(teams):
+        played = counts.get(team, 0)
+        weight = played / (played + k)
+        params[index] = mean_attack + weight * (attack[index] - mean_attack)
+        params[n + index] = mean_defence + weight * (defence[index] - mean_defence)
+
+    model._params = params
 
 
 def get_model(competition_code: str, results: list[dict], xi: float = DEFAULT_XI):

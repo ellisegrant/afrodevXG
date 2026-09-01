@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,12 +20,15 @@ from mcp.server.fastmcp import FastMCP
 
 from data import fixtures as fixtures_api
 from data import odds as odds_api
+from data import picklog
 from models import backtest as backtest_api
 from models import dixon_coles
 from schemas import (
     BacktestResult,
     Fixture,
+    LoggedPick,
     MatchProbabilities,
+    PickReview,
     ValuePick,
     ValueScan,
     XiTuningResult,
@@ -284,6 +288,7 @@ def scan_value(
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
     bankroll: Optional[float] = None,
     min_team_matches: int = 10,
+    log_picks: bool = True,
 ) -> ValueScan:
     """Check every upcoming fixture in a competition and list the model's disagreements.
 
@@ -301,6 +306,7 @@ def scan_value(
         min_team_matches: Skip fixtures where either side has fewer matches of
             history than this. Newly promoted teams otherwise produce huge,
             meaningless edges.
+        log_picks: Record the picks so review_picks can score them later.
     """
     competition_code = competition_code.upper().strip()
 
@@ -404,6 +410,15 @@ def scan_value(
     if not events:
         notes.append("The odds feed returned no upcoming fixtures for this competition.")
 
+    if log_picks and picks:
+        recorded = picklog.record(
+            competition_code, [pick.model_dump() for pick in picks]
+        )
+        notes.append(
+            f"Logged {recorded['added']} new picks "
+            f"({recorded['skipped']} already recorded). Score them with review_picks."
+        )
+
     return ValueScan(
         competition=competition_code,
         sharp_book=", ".join(sorted(sharp_books)) or "none",
@@ -414,6 +429,162 @@ def scan_value(
         picks=picks,
         notes=notes,
     )
+
+
+def _settle_outcome(match: dict) -> str:
+    if match["home_goals"] > match["away_goals"]:
+        return "home"
+    if match["home_goals"] < match["away_goals"]:
+        return "away"
+    return "draw"
+
+
+@mcp.tool()
+def review_picks(competition_code: Optional[str] = None, refresh_odds: bool = True) -> PickReview:
+    """Score every pick the scanner has logged.
+
+    Settles fixtures that have been played, and for those still to come records
+    how the market has moved since the pick was made. That movement - closing
+    line value - is the fastest honest read on whether the model finds real
+    value, because it needs weeks rather than the thousands of bets that
+    profit-and-loss requires.
+
+    Args:
+        competition_code: Limit to one competition. Default reviews all.
+        refresh_odds: Update the closing price on fixtures not yet played.
+            Costs one Odds API credit per competition involved.
+    """
+    records = picklog.load_all()
+    if competition_code:
+        competition_code = competition_code.upper().strip()
+        records = [r for r in records if r["competition"] == competition_code]
+
+    now = datetime.now(timezone.utc).isoformat()
+    competitions = sorted({record["competition"] for record in records})
+    updates: dict[str, dict] = {}
+
+    # Settle anything that has been played.
+    results_by_competition: dict[str, dict] = {}
+    for competition in competitions:
+        try:
+            played = fixtures_api.get_recent_results(competition, seasons_back=1)
+        except fixtures_api.FootballDataError as exc:
+            log.warning("cannot settle %s: %s", competition, exc)
+            continue
+        results_by_competition[competition] = {
+            (odds_api.normalize_team(match["home"]), odds_api.normalize_team(match["away"])): match
+            for match in played
+        }
+
+    # Refresh the market on fixtures still to come.
+    live_events: dict[str, list] = {}
+    if refresh_odds:
+        for competition in competitions:
+            if any(r["status"] == "open" and r["kickoff"] > now for r in records
+                   if r["competition"] == competition):
+                try:
+                    live_events[competition] = odds_api.fetch_events(competition)
+                except odds_api.OddsAPIError as exc:
+                    log.warning("cannot refresh odds for %s: %s", competition, exc)
+
+    for record in records:
+        if record["status"] == "settled":
+            continue
+
+        home_name, _, away_name = record["match"].partition(" v ")
+        key = (odds_api.normalize_team(home_name), odds_api.normalize_team(away_name))
+        played = results_by_competition.get(record["competition"], {}).get(key)
+
+        if played is not None:
+            actual = _settle_outcome(played)
+            won = actual == record["outcome"]
+            updates[record["id"]] = {
+                "status": "settled",
+                "result": f"{played['home_goals']}-{played['away_goals']} ({actual})",
+                "profit_units": round(record["price_taken"] - 1.0, 4) if won else -1.0,
+            }
+            continue
+
+        events = live_events.get(record["competition"], [])
+        if events and record["kickoff"] > now:
+            event = odds_api._match_event(events, home_name, away_name)
+            market = odds_api.market_from_event(event) if event else None
+            if market:
+                updates[record["id"]] = {
+                    "closing_fair_prob": market["fair"][record["outcome"]],
+                    "closing_best_price": market["best_odds"][record["outcome"]]["odds"],
+                }
+
+    picklog.update_many(updates)
+    records = picklog.load_all()
+    if competition_code:
+        records = [r for r in records if r["competition"] == competition_code]
+
+    settled = [r for r in records if r["status"] == "settled"]
+    upcoming = [r for r in records if r["status"] != "settled" and r["kickoff"] > now]
+    stale = [r for r in records if r["status"] != "settled" and r["kickoff"] <= now]
+
+    review = PickReview(
+        total_picks=len(records),
+        settled=len(settled),
+        awaiting_kickoff=len(upcoming),
+        unsettled_past_kickoff=len(stale),
+    )
+
+    if settled:
+        review.wins = sum(1 for r in settled if (r["profit_units"] or 0) > 0)
+        review.win_rate = review.wins / len(settled)
+        review.profit_units = round(sum(r["profit_units"] or 0.0 for r in settled), 3)
+        review.roi_pct = review.profit_units / len(settled) * 100.0
+        # Brier on the single selection: (probability - what happened) squared.
+        review.model_brier = sum(
+            (r["model_prob"] - (1.0 if (r["profit_units"] or 0) > 0 else 0.0)) ** 2
+            for r in settled
+        ) / len(settled)
+        review.market_brier = sum(
+            (r["fair_prob_at_pick"] - (1.0 if (r["profit_units"] or 0) > 0 else 0.0)) ** 2
+            for r in settled
+        ) / len(settled)
+
+    with_clv = [r for r in records if r.get("closing_fair_prob") is not None]
+    if with_clv:
+        movements = [r["closing_fair_prob"] - r["fair_prob_at_pick"] for r in with_clv]
+        review.avg_closing_line_value = sum(movements) / len(movements)
+        review.clv_positive_rate = sum(1 for m in movements if m > 0) / len(movements)
+
+    review.picks = [
+        LoggedPick(
+            **{key: record[key] for key in (
+                "id", "competition", "recorded_at", "status", "match", "kickoff",
+                "selection", "model_prob", "fair_prob_at_pick", "edge_at_pick",
+                "price_taken", "price_book", "closing_fair_prob", "result",
+                "profit_units",
+            )},
+            closing_line_value=(
+                record["closing_fair_prob"] - record["fair_prob_at_pick"]
+                if record.get("closing_fair_prob") is not None else None
+            ),
+        )
+        for record in sorted(records, key=lambda r: r["kickoff"])
+    ]
+
+    review.notes = [
+        "Brier score: lower is better. If the market's Brier beats the model's on "
+        "your own picks, the model is not finding value.",
+        "Closing line value is the honest early signal - positive means the market "
+        "moved toward your number after you picked.",
+    ]
+    if len(settled) < 50:
+        review.notes.append(
+            f"Only {len(settled)} settled picks: far too few to draw any conclusion "
+            "about profitability. Hundreds are needed."
+        )
+    if stale:
+        review.notes.append(
+            f"{len(stale)} picks are past kickoff but unsettled - the result feed may "
+            "not have caught up, or the fixture names did not match."
+        )
+    return review
 
 
 if __name__ == "__main__":

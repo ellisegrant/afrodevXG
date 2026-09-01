@@ -169,3 +169,58 @@ class ValueScan(BaseModel):
     min_edge: float
     picks: list[ValuePick]
     notes: list[str] = Field(default_factory=list)
+
+
+class LoggedPick(BaseModel):
+    """A recorded pick, with whatever is known about how it turned out."""
+
+    id: str
+    competition: str
+    recorded_at: str
+    status: str = Field(..., description="open, pending or settled.")
+    match: str
+    kickoff: str
+    selection: str
+    model_prob: float
+    fair_prob_at_pick: float
+    edge_at_pick: float
+    price_taken: float
+    price_book: str
+    closing_fair_prob: Optional[float] = None
+    closing_line_value: Optional[float] = Field(
+        None,
+        description="Closing market probability minus the probability when picked. "
+        "Positive means the market moved toward the model.",
+    )
+    result: Optional[str] = None
+    profit_units: Optional[float] = None
+
+
+class PickReview(BaseModel):
+    """Scorecard for everything the scanner has ever flagged."""
+
+    total_picks: int
+    settled: int
+    awaiting_kickoff: int
+    unsettled_past_kickoff: int
+
+    wins: int = 0
+    win_rate: Optional[float] = None
+    profit_units: Optional[float] = Field(
+        None, description="Profit at one unit staked per pick."
+    )
+    roi_pct: Optional[float] = None
+
+    model_brier: Optional[float] = Field(
+        None, description="Brier score of the model on settled picks. Lower is better."
+    )
+    market_brier: Optional[float] = Field(
+        None, description="Brier score of the market on the same picks."
+    )
+    avg_closing_line_value: Optional[float] = Field(
+        None, description="Mean market movement toward the model, in probability points."
+    )
+    clv_positive_rate: Optional[float] = None
+
+    picks: list[LoggedPick] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
