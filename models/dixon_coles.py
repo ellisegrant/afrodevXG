@@ -24,6 +24,12 @@ DEFAULT_XI = 0.0018
 # strength estimate that shows up as a huge fake edge.
 SHRINKAGE_K = 8.0
 
+# Above this many matches a team's own record is taken at face value. Without
+# it, n/(n+k) still pulls a side with a hundred matches several percent toward
+# the mean, which measurably costs accuracy on exactly the fixtures we know
+# most about.
+SHRINKAGE_FULL_CONFIDENCE = 30
+
 # Every penaltyblog goal model takes the same constructor arguments, so they are
 # interchangeable here and can be ranked against each other by backtest.
 MODEL_CLASSES = {
@@ -128,6 +134,8 @@ def _shrink_team_strengths(model, counts: dict[str, int], k: float) -> None:
 
     for index, team in enumerate(teams):
         played = counts.get(team, 0)
+        if played >= SHRINKAGE_FULL_CONFIDENCE:
+            continue
         weight = played / (played + k)
         params[index] = mean_attack + weight * (attack[index] - mean_attack)
         params[n + index] = mean_defence + weight * (defence[index] - mean_defence)

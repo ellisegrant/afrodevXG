@@ -83,6 +83,7 @@ def walk_forward(
     xi: float = dixon_coles.DEFAULT_XI,
     refit_every: int = 10,
     model_name: str = "dixon_coles",
+    shrinkage_k: float = dixon_coles.SHRINKAGE_K,
 ) -> dict[str, Any]:
     """Predict the last `test_matches` using only matches played before each one.
 
@@ -106,7 +107,9 @@ def walk_forward(
     for index in range(split, len(ordered)):
         match = ordered[index]
         if model is None or (index - split) % refit_every == 0:
-            model = dixon_coles.fit_model(ordered[:index], xi=xi, model_name=model_name)
+            model = dixon_coles.fit_model(
+                ordered[:index], xi=xi, model_name=model_name, shrinkage_k=shrinkage_k
+            )
             known = set(dixon_coles.model_teams(model))
 
         if match["home"] not in known or match["away"] not in known:
@@ -156,6 +159,7 @@ def walk_forward(
     return {
         "xi": xi,
         "model_name": model_name,
+        "shrinkage_k": shrinkage_k,
         "matches_trained_on": split,
         "matches_scored": len(records),
         "matches_skipped": skipped,

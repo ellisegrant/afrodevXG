@@ -132,6 +132,21 @@ Walk-forward RPS over recent seasons (lower is better):
 | Premier League (248 matches) | 0.2063 | 0.2258 |
 | La Liga (247 matches) | 0.2095 | 0.2226 |
 
+**The model family barely matters.** All six penaltyblog goal models were
+backtested on the same 98 PL matches and landed within 0.0012 RPS of each other
+(Weibull copula 0.2043, Dixon-Coles 0.2052, plain Poisson 0.2052). Weibull
+copula nominally wins while taking 107 seconds to fit against Dixon-Coles' one.
+Notably, plain Poisson scores the same as Dixon-Coles: the low-score correction
+Dixon-Coles is known for is worth nothing measurable here.
+
+**Shrinkage costs a little average accuracy and buys tail protection.** Pulling
+thin teams toward the league average makes RPS slightly worse (0.20633 to
+0.20682 over 250 matches — inside the noise), because it adds bias to fixtures
+the model already understands. It is kept because the failure it prevents is
+severe rather than frequent: Coventry City, with two matches of history, was
+priced at 0.3% to win at Chelsea with an away xG of 0.03. Teams above 30
+matches are exempt, so established fixtures are untouched.
+
 **Time decay is a dead end.** ξ was grid-searched on both leagues at two sample
 sizes. On 98 PL matches ξ=0.005 looked best; on 248 PL matches the winner moved
 to ξ=0.003, and on La Liga *no decay at all* (ξ=0.0) scored best, with RPS
