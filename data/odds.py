@@ -38,6 +38,15 @@ SPORT_KEYS = {
     "CL": "soccer_uefa_champs_league",
 }
 
+# Betting exchanges quote what people will actually trade at, with no margin
+# baked into the price, so they are the honest yardstick for "is this likely".
+# Ordered by preference; the first one quoting a match wins.
+SHARP_BOOKS = ["betfair_ex_uk", "smarkets", "matchbook", "pinnacle", "betfair_sb_uk"]
+
+# The book you would actually place the bet with - the price you can really get.
+DEFAULT_TARGET_BOOK = "betway"
+
+
 # Searched in order when the caller does not say which competition it is.
 _DEFAULT_SPORT_SEARCH = [
     "soccer_epl",
@@ -271,6 +280,124 @@ def fetch_odds(
         if prices:
             return prices
         log.info("event found in %s but no usable h2h market", sport_key)
+
+    log.info("no bookmaker odds found for %s v %s", home_team, away_team)
+    return None
+
+
+def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-bookmaker 1X2 prices for one event, keyed by bookmaker key."""
+    home_name = event.get("home_team", "")
+    away_name = event.get("away_team", "")
+
+    books: dict[str, dict[str, Any]] = {}
+    for bookmaker in event.get("bookmakers", []):
+        prices: dict[str, float] = {}
+        for market in bookmaker.get("markets", []):
+            if market.get("key") != "h2h":
+                continue
+            for outcome in market.get("outcomes", []):
+                name, price = outcome.get("name", ""), outcome.get("price")
+                if not price:
+                    continue
+                if name.lower() == "draw":
+                    prices["draw"] = float(price)
+                elif _similarity(name, home_name) >= 0.9:
+                    prices["home"] = float(price)
+                elif _similarity(name, away_name) >= 0.9:
+                    prices["away"] = float(price)
+        if len(prices) == 3:
+            books[bookmaker.get("key", "")] = {
+                "title": bookmaker.get("title", bookmaker.get("key", "")),
+                "odds": prices,
+            }
+    return books
+
+
+def _best_prices(books: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Highest price available on each outcome, and who is offering it."""
+    best: dict[str, dict[str, Any]] = {}
+    for key, book in books.items():
+        for outcome, price in book["odds"].items():
+            if outcome not in best or price > best[outcome]["odds"]:
+                best[outcome] = {"odds": price, "book": book["title"], "key": key}
+    return best
+
+
+def market_from_event(
+    event: dict[str, Any], target_book: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """Split one event's prices into a sharp baseline and a bettable price.
+
+    The sharp book (an exchange where possible) is de-vigged to give the fair
+    market probability; the target book is simply the price you could take.
+    """
+    books = _book_prices(event)
+    if not books:
+        return None
+
+    target_book = (target_book or DEFAULT_TARGET_BOOK).lower()
+
+    sharp_key = next((key for key in SHARP_BOOKS if key in books), None)
+    if sharp_key is None:
+        # No exchange quoting this match: fall back to the average of all books,
+        # which carries every book's margin and is a weaker baseline.
+        averaged = {
+            outcome: sum(book["odds"][outcome] for book in books.values()) / len(books)
+            for outcome in ("home", "draw", "away")
+        }
+        sharp = {"title": f"average of {len(books)} books", "odds": averaged}
+    else:
+        sharp = books[sharp_key]
+
+    raw_total = sum(1.0 / price for price in sharp["odds"].values())
+
+    return {
+        "home_team": event.get("home_team", ""),
+        "away_team": event.get("away_team", ""),
+        "commence_time": event.get("commence_time", ""),
+        "sharp_book": sharp["title"],
+        "sharp_odds": sharp["odds"],
+        "fair": devig(sharp["odds"]),
+        "sharp_overround_pct": (raw_total - 1.0) * 100.0,
+        "target_book": books[target_book]["title"] if target_book in books else None,
+        "target_odds": books[target_book]["odds"] if target_book in books else None,
+        "best_odds": _best_prices(books),
+        "books_seen": len(books),
+    }
+
+
+def fetch_events(competition_code: str) -> list[dict[str, Any]]:
+    """Every upcoming event with odds for a competition (one credit, then cached)."""
+    sport_key = SPORT_KEYS.get(competition_code.upper().strip())
+    if not sport_key:
+        log.warning("no Odds API sport key mapped for %s", competition_code)
+        return []
+    return _fetch_sport(sport_key)
+
+
+def fetch_market(
+    home_team: str,
+    away_team: str,
+    competition_code: Optional[str] = None,
+    target_book: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Sharp baseline + bettable price for one fixture, or None if unlisted."""
+    sport_keys = (
+        [SPORT_KEYS[competition_code.upper().strip()]]
+        if competition_code and competition_code.upper().strip() in SPORT_KEYS
+        else _DEFAULT_SPORT_SEARCH
+    )
+
+    for sport_key in sport_keys:
+        try:
+            events = _fetch_sport(sport_key)
+        except OddsAPIError as exc:
+            log.warning("odds lookup failed for %s: %s", sport_key, exc)
+            return None
+        event = _match_event(events, home_team, away_team)
+        if event is not None:
+            return market_from_event(event, target_book=target_book)
 
     log.info("no bookmaker odds found for %s v %s", home_team, away_team)
     return None

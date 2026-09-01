@@ -41,8 +41,21 @@ class MatchProbabilities(BaseModel):
     market_home_odds: Optional[float] = None
     market_draw_odds: Optional[float] = None
     market_away_odds: Optional[float] = None
+    sharp_book: Optional[str] = Field(
+        None, description="Book used as the honest baseline (an exchange where possible)."
+    )
+    sharp_overround_pct: Optional[float] = Field(
+        None, description="Margin baked into the baseline book's prices, in percent."
+    )
+    target_book: Optional[str] = Field(
+        None, description="Book whose price you could actually take."
+    )
+    target_home_odds: Optional[float] = None
+    target_draw_odds: Optional[float] = None
+    target_away_odds: Optional[float] = None
+
     market_home_fair: Optional[float] = Field(
-        None, description="De-vigged bookmaker probability of a home win."
+        None, description="De-vigged baseline probability of a home win."
     )
     market_draw_fair: Optional[float] = None
     market_away_fair: Optional[float] = None
@@ -112,4 +125,47 @@ class XiTuningResult(BaseModel):
     best_rps: float
     current_default: float
     baseline_rps: float
+    notes: list[str] = Field(default_factory=list)
+
+
+class ValuePick(BaseModel):
+    """One selection where the model disagrees with the honest market."""
+
+    match: str
+    kickoff: str
+    selection: str = Field(..., description="Human-readable pick, e.g. 'Arsenal win'.")
+    outcome: str = Field(..., description="home, draw or away.")
+
+    model_prob: float
+    fair_prob: float = Field(..., description="De-vigged probability from the sharp book.")
+    edge: float = Field(..., description="model_prob - fair_prob, in probability points.")
+
+    price: float = Field(..., description="Decimal odds at the target book.")
+    price_book: str
+    best_price: float
+    best_price_book: str
+
+    expected_value_pct: float = Field(
+        ...,
+        description="Expected return per unit staked at the target price, in percent, "
+        "assuming the model probability is correct.",
+    )
+    kelly_fraction: Optional[float] = Field(
+        None, description="Full-Kelly share of bankroll. Assumes the model is right."
+    )
+    stake: Optional[float] = Field(
+        None, description="Quarter-Kelly stake, only when a bankroll was supplied."
+    )
+
+
+class ValueScan(BaseModel):
+    """Every selection in a competition clearing the edge threshold."""
+
+    competition: str
+    sharp_book: str
+    target_book: str
+    fixtures_checked: int
+    picks_found: int
+    min_edge: float
+    picks: list[ValuePick]
     notes: list[str] = Field(default_factory=list)
