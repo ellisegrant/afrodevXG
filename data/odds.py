@@ -47,10 +47,15 @@ SHARP_BOOKS = ["betfair_ex_uk", "smarkets", "matchbook", "pinnacle", "betfair_sb
 DEFAULT_TARGET_BOOK = "betway"
 
 # Each market costs one credit per region per request, so keep the default lean.
-DEFAULT_MARKETS = "h2h,totals"
+DEFAULT_MARKETS = "h2h,totals,spreads"
 
 # Preferred goals line when books quote more than one; the model can price any.
 TOTALS_LINE = 2.5
+
+# Markets the free plan's /odds endpoint will not serve. They exist only on the
+# per-event endpoint, which needs a paid plan: btts, double_chance,
+# draw_no_bet, team_totals. get_match_markets prices them from the model instead.
+UNSUPPORTED_FREE_MARKETS = ("btts", "double_chance", "draw_no_bet", "team_totals")
 
 
 # Searched in order when the caller does not say which competition it is.
@@ -313,6 +318,7 @@ def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "title": bookmaker.get("title", bookmaker.get("key", "")),
             "odds": None,
             "totals": None,
+            "spreads": None,
             "btts": None,
         }
 
@@ -349,6 +355,29 @@ def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if complete:
                     entry["totals"] = complete
 
+            elif key == "spreads":
+                by_line: dict[float, dict[str, float]] = {}
+                for outcome in outcomes:
+                    price, point = outcome.get("price"), outcome.get("point")
+                    name = outcome.get("name", "")
+                    if not price or point is None:
+                        continue
+                    if _similarity(name, home_name) >= 0.9:
+                        side = "home"
+                    elif _similarity(name, away_name) >= 0.9:
+                        side = "away"
+                    else:
+                        continue
+                    # A handicap is quoted from each side's own perspective; index
+                    # both legs under the home team's line so they pair up.
+                    line = float(point) if side == "home" else -float(point)
+                    by_line.setdefault(line, {})[side] = float(price)
+                complete = {
+                    line: prices for line, prices in by_line.items() if len(prices) == 2
+                }
+                if complete:
+                    entry["spreads"] = complete
+
             elif key == "btts":
                 prices = {}
                 for outcome in outcomes:
@@ -359,7 +388,7 @@ def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if len(prices) == 2:
                     entry["btts"] = prices
 
-        if entry["odds"] or entry["totals"] or entry["btts"]:
+        if any(entry[market] for market in ("odds", "totals", "spreads", "btts")):
             books[bookmaker.get("key", "")] = entry
     return books
 
@@ -379,28 +408,32 @@ def _best_prices(
     return best
 
 
-def _pick_totals_line(books: dict[str, dict[str, Any]]) -> Optional[float]:
-    """The goals line the most books are quoting, preferring 2.5 on a tie."""
+def _pick_line(
+    books: dict[str, dict[str, Any]], market: str, preferred: Optional[float] = None
+) -> Optional[float]:
+    """The line the most books are quoting, breaking ties toward `preferred`."""
     counts: dict[float, int] = {}
     for book in books.values():
-        for line in (book.get("totals") or {}):
+        for line in (book.get(market) or {}):
             counts[line] = counts.get(line, 0) + 1
     if not counts:
         return None
     most = max(counts.values())
     candidates = [line for line, count in counts.items() if count == most]
-    return TOTALS_LINE if TOTALS_LINE in candidates else min(candidates)
+    if preferred is not None and preferred in candidates:
+        return preferred
+    return min(candidates, key=abs)
 
 
-def _flatten_totals(
-    books: dict[str, dict[str, Any]], line: float
+def _flatten_line(
+    books: dict[str, dict[str, Any]], market: str, line: float
 ) -> dict[str, dict[str, Any]]:
-    """Books quoting one specific goals line, shaped like any other two-way market."""
+    """Books quoting one specific line, shaped like any other two-way market."""
     flattened = {}
     for key, book in books.items():
-        prices = (book.get("totals") or {}).get(line)
+        prices = (book.get(market) or {}).get(line)
         if prices:
-            flattened[key] = {"title": book["title"], "totals": prices}
+            flattened[key] = {"title": book["title"], market: prices}
     return flattened
 
 
@@ -434,6 +467,19 @@ def _side_market(
     }
 
 
+def _line_market(
+    books: dict[str, dict[str, Any]],
+    market: str,
+    line: Optional[float],
+    target_book: str,
+) -> Optional[dict[str, Any]]:
+    """One line of a lined market, assembled like any other two-way market."""
+    if line is None:
+        return None
+    assembled = _side_market(_flatten_line(books, market, line), market, target_book)
+    return {**assembled, "line": line} if assembled else None
+
+
 def market_from_event(
     event: dict[str, Any], target_book: Optional[str] = None
 ) -> Optional[dict[str, Any]]:
@@ -462,7 +508,8 @@ def market_from_event(
         sharp = books[sharp_key]
 
     raw_total = sum(1.0 / price for price in sharp["odds"].values())
-    totals_line = _pick_totals_line(all_books)
+    totals_line = _pick_line(all_books, "totals", TOTALS_LINE)
+    spread_line = _pick_line(all_books, "spreads")
 
     return {
         "home_team": event.get("home_team", ""),
@@ -477,13 +524,9 @@ def market_from_event(
         "best_odds": _best_prices(books),
         "books_seen": len(books),
         "totals_line": totals_line,
-        "totals": (
-            {**_side_market(_flatten_totals(all_books, totals_line), "totals", target_book),
-             "line": totals_line}
-            if totals_line is not None
-            and _side_market(_flatten_totals(all_books, totals_line), "totals", target_book)
-            else None
-        ),
+        "totals": _line_market(all_books, "totals", totals_line, target_book),
+        "spread_line": spread_line,
+        "spreads": _line_market(all_books, "spreads", spread_line, target_book),
         "btts": _side_market(all_books, "btts", target_book),
     }
 

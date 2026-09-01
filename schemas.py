@@ -247,3 +247,40 @@ class ModelComparison(BaseModel):
     baseline_rps: float
     current_default: str = "dixon_coles"
     notes: list[str] = Field(default_factory=list)
+
+
+class ScoreProbability(BaseModel):
+    score: str
+    probability: float
+
+
+class MarketSheet(BaseModel):
+    """Model probabilities across every market the score grid can price.
+
+    The free odds feed only carries 1X2, totals and handicaps, so most of these
+    have no automatic market comparison. They are here to be read against
+    whatever prices your own bookmaker shows.
+    """
+
+    home_team: str
+    away_team: str
+    competition: str
+    home_xg: float
+    away_xg: float
+
+    result: dict[str, float] = Field(..., description="home_win, draw, away_win.")
+    double_chance: dict[str, float]
+    draw_no_bet: dict[str, float]
+    totals: dict[str, float] = Field(..., description="Over/under at 0.5 to 4.5 goals.")
+    btts: dict[str, float]
+    clean_sheet: dict[str, float]
+    win_to_nil: dict[str, float]
+    team_totals: dict[str, float]
+    handicaps: dict[str, float] = Field(
+        ..., description="Asian handicap probabilities, keyed by side and line."
+    )
+    correct_score: list[ScoreProbability]
+    expected_points: dict[str, float]
+
+    matches_used: int = 0
+    notes: list[str] = Field(default_factory=list)

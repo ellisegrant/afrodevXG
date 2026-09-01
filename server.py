@@ -27,6 +27,7 @@ from schemas import (
     BacktestResult,
     Fixture,
     LoggedPick,
+    MarketSheet,
     MatchProbabilities,
     ModelComparison,
     PickReview,
@@ -285,6 +286,8 @@ _SELECTION_LABEL = {
     "away": "{away} win",
     "over": "Over {line} goals",
     "under": "Under {line} goals",
+    "home_hcp": "{home} {line:+g} handicap",
+    "away_hcp": "{away} {line:+g} handicap",
     "yes": "Both teams to score",
     "no": "Both teams not to score",
 }
@@ -383,6 +386,20 @@ def scan_value(
             else:
                 over, under = dixon_coles.predict_totals(model, home, away, line)
             market_blocks.append(({"over": over, "under": under}, market["totals"]))
+        if market.get("spreads"):
+            line = market["spreads"]["line"]
+            home_cover, away_cover = dixon_coles.predict_handicap(model, home, away, line)
+            block = dict(market["spreads"])
+            # Relabel the two legs so they cannot be confused with 1X2.
+            for field in ("fair", "target_odds", "best_odds"):
+                if block.get(field):
+                    block[field] = {
+                        f"{side}_hcp": value for side, value in block[field].items()
+                    }
+            market_blocks.append(
+                ({"home_hcp": home_cover, "away_hcp": away_cover}, block)
+            )
+
         if market.get("btts"):
             market_blocks.append(
                 (
@@ -425,7 +442,7 @@ def scan_value(
                         selection=_SELECTION_LABEL[outcome].format(
                             home=market["home_team"],
                             away=market["away_team"],
-                            line=block.get("line", ""),
+                            line=block.get("line") if block.get("line") is not None else "",
                         ),
                         outcome=outcome,
                         model_prob=model_prob,
@@ -453,6 +470,13 @@ def scan_value(
         "Backtesting shows this model beats a base-rate baseline but not the "
         "market, so treat any edge as unproven rather than as a signal.",
     ]
+    if any(pick.outcome.endswith("_hcp") and float(pick.selection.split()[-2]) % 1 == 0
+           for pick in picks):
+        notes.append(
+            "Whole-number handicaps can push - if the match lands exactly on the "
+            "line your stake is returned. The expected value shown treats a push "
+            "as a loss, so it understates those picks."
+        )
     if bankroll:
         notes.append(
             "Stakes are quarter-Kelly and assume the model probability is correct; "
@@ -675,6 +699,63 @@ def compare_models(
             "data than a single league season provides.",
         ],
         **report,
+    )
+
+
+@mcp.tool()
+def get_match_markets(
+    home_team: str,
+    away_team: str,
+    competition_code: str = "PL",
+    seasons_back: int = 3,
+) -> MarketSheet:
+    """Model probabilities for every market the score grid can price.
+
+    Beyond 1X2 and over/under this covers double chance, draw no bet, correct
+    score, clean sheets, win to nil, team totals and Asian handicaps. The free
+    odds feed carries prices for only three of those, so the rest come back as
+    probabilities to compare by eye against your own bookmaker's odds.
+
+    Args:
+        home_team: Home side.
+        away_team: Away side.
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        seasons_back: Seasons of history to fit on.
+    """
+    competition_code = competition_code.upper().strip()
+    results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
+    model = dixon_coles.get_model(competition_code, results)
+    known = dixon_coles.model_teams(model)
+
+    home_resolved = _resolve_team(home_team, known)
+    away_resolved = _resolve_team(away_team, known)
+    if home_resolved is None or away_resolved is None:
+        unknown = home_team if home_resolved is None else away_team
+        raise ValueError(
+            f"{unknown!r} is not a team in {competition_code}. "
+            f"Known teams: {', '.join(known)}"
+        )
+
+    sheet = dixon_coles.market_sheet(model, home_resolved, away_resolved)
+    notes = [
+        "Only 1X2, totals and handicaps can be checked against the market on the "
+        "free Odds API plan. Everything else here is the model's view alone.",
+        "Compare a probability to a price by dividing: a 40% chance is fair at "
+        "decimal odds of 2.50 (1 / 0.40).",
+    ]
+    counts = dixon_coles.team_match_counts(results)
+    for team in (home_resolved, away_resolved):
+        if counts.get(team, 0) < 10:
+            notes.append(
+                f"{team} has only {counts.get(team, 0)} matches of history, so its "
+                "strength is shrunk toward the league average."
+            )
+
+    return MarketSheet(
+        competition=competition_code,
+        matches_used=len(results),
+        notes=notes,
+        **sheet,
     )
 
 

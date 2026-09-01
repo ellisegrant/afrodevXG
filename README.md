@@ -63,6 +63,10 @@ mcp dev server.py
 - `list_competitions()` — competition codes (PL, PD, BL1, SA, FL1, …).
 - `list_teams(competition_code)` — team names as the results feed spells them.
 - `get_upcoming_fixtures(competition_code, days_ahead=14)` — scheduled matches.
+- `get_match_markets(home_team, away_team, competition_code)` — the full model
+  probability sheet: 1X2, double chance, draw no bet, over/under from 0.5 to
+  4.5, BTTS, clean sheets, win to nil, team totals, Asian handicaps, correct
+  score and expected points.
 - `scan_value(competition_code, min_edge=0.03, target_book="betway", bankroll=None)`
   — every upcoming fixture where the model disagrees with the exchange, with
   the target book's price, the best price anywhere, expected value and an
@@ -110,6 +114,26 @@ Raw implied probability is `1 / decimal_odds`; across 1X2 those sum to more
 than 1 (the bookmaker's overround). `devig()` divides each by the sum so they
 total 1.0, giving fair market probabilities. The edge is then
 `model_probability − fair_market_probability`.
+
+## Market coverage
+
+The free Odds API plan serves only three markets through the endpoint this uses:
+**1X2, over/under totals and Asian handicaps**. Those are the ones `scan_value`
+can compute an edge for, because an edge needs a price to compare against.
+
+`btts`, `double_chance`, `draw_no_bet` and `team_totals` are rejected outright
+(`INVALID_MARKET`) — they live on the per-event endpoint, which needs a paid
+plan.
+
+That does not limit the model. `get_match_markets` prices every market the score
+grid supports — double chance, draw no bet, clean sheets, win to nil, team
+totals, correct score, handicaps at eight lines, expected points — and returns
+them as probabilities. Read those against whatever odds your own bookmaker
+shows: a 40% chance is fair at decimal odds of 2.50, so anything above that is
+value.
+
+Out of reach entirely, because neither data source carries them: corners, cards,
+shots, player goalscorers, and anything in-play.
 
 ## Caveats
 

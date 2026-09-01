@@ -239,6 +239,124 @@ def _btts(grid) -> float:
     return float(matrix[1:, 1:].sum())
 
 
+
+def _safe(callable_or_value, default: float = 0.0) -> float:
+    """penaltyblog raises on some lines; a missing market is not a crash."""
+    try:
+        value = callable_or_value() if callable(callable_or_value) else callable_or_value
+        return float(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def market_sheet(
+    model, home: str, away: str, top_scores: int = 8
+) -> dict[str, Any]:
+    """Every market the score grid can price, whether or not a book quotes it.
+
+    The free odds feed only carries 1X2, totals and handicaps, but the same
+    fitted grid prices double chance, draw no bet, correct score, clean sheets,
+    win to nil and team totals. Those come out as model probabilities for you to
+    compare by eye against whatever book you actually use.
+    """
+    known = model_teams(model)
+    for team, role in ((home, "home"), (away, "away")):
+        if known and team not in known:
+            raise ModelError(f"unknown {role} team {team!r}")
+
+    try:
+        grid = model.predict(home, away)
+    except Exception as exc:
+        raise ModelError(f"prediction failed for {home} v {away}: {exc}") from exc
+
+    matrix = _grid_matrix(grid)
+    home_goals = matrix.sum(axis=1)
+    away_goals = matrix.sum(axis=0)
+    home_xg, away_xg = _goal_expectations(grid)
+
+    goal_lines = [0.5, 1.5, 2.5, 3.5, 4.5]
+    totals = {}
+    for line in goal_lines:
+        over, under = _totals(grid, line)
+        totals[f"over_{line}"] = over
+        totals[f"under_{line}"] = under
+
+    handicaps = {}
+    for strike in (-2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0):
+        handicaps[f"home_{strike:+g}"] = _safe(lambda s=strike: grid.asian_handicap("home", s))
+        handicaps[f"away_{strike:+g}"] = _safe(lambda s=strike: grid.asian_handicap("away", s))
+
+    scores = []
+    for home_score in range(min(6, matrix.shape[0])):
+        for away_score in range(min(6, matrix.shape[1])):
+            scores.append(
+                {
+                    "score": f"{home_score}-{away_score}",
+                    "probability": float(matrix[home_score, away_score]),
+                }
+            )
+    scores.sort(key=lambda entry: -entry["probability"])
+
+    return {
+        "home_team": home,
+        "away_team": away,
+        "home_xg": home_xg,
+        "away_xg": away_xg,
+        "result": {
+            "home_win": float(grid.home_win),
+            "draw": float(grid.draw),
+            "away_win": float(grid.away_win),
+        },
+        "double_chance": {
+            "home_or_draw": _safe(getattr(grid, "double_chance_1x", 0.0)),
+            "home_or_away": _safe(getattr(grid, "double_chance_12", 0.0)),
+            "draw_or_away": _safe(getattr(grid, "double_chance_x2", 0.0)),
+        },
+        "draw_no_bet": {
+            "home": _safe(getattr(grid, "draw_no_bet_home", 0.0)),
+            "away": _safe(getattr(grid, "draw_no_bet_away", 0.0)),
+        },
+        "totals": totals,
+        "btts": {"yes": _btts(grid), "no": 1.0 - _btts(grid)},
+        "clean_sheet": {
+            "home": float(away_goals[0]),
+            "away": float(home_goals[0]),
+        },
+        "win_to_nil": {
+            "home": _safe(getattr(grid, "win_to_nil_home", 0.0)),
+            "away": _safe(getattr(grid, "win_to_nil_away", 0.0)),
+        },
+        "team_totals": {
+            "home_over_0.5": float(1.0 - home_goals[0]),
+            "home_over_1.5": float(home_goals[2:].sum()),
+            "home_over_2.5": float(home_goals[3:].sum()),
+            "away_over_0.5": float(1.0 - away_goals[0]),
+            "away_over_1.5": float(away_goals[2:].sum()),
+            "away_over_2.5": float(away_goals[3:].sum()),
+        },
+        "handicaps": handicaps,
+        "correct_score": scores[:top_scores],
+        "expected_points": {
+            "home": _safe(getattr(grid, "expected_points_home", 0.0)),
+            "away": _safe(getattr(grid, "expected_points_away", 0.0)),
+        },
+    }
+
+
+def predict_handicap(
+    model, home: str, away: str, line: float
+) -> tuple[float, float]:
+    """(home covers, away covers) for an Asian handicap quoted on the home side."""
+    try:
+        grid = model.predict(home, away)
+    except Exception as exc:
+        raise ModelError(f"prediction failed for {home} v {away}: {exc}") from exc
+    return (
+        _safe(lambda: grid.asian_handicap("home", line)),
+        _safe(lambda: grid.asian_handicap("away", -line)),
+    )
+
+
 def predict_totals(model, home: str, away: str, line: float) -> tuple[float, float]:
     """(over, under) probabilities for an arbitrary goals line."""
     try:
