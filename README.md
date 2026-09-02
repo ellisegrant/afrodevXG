@@ -63,6 +63,10 @@ mcp dev server.py
 - `list_competitions()` — competition codes (PL, PD, BL1, SA, FL1, …).
 - `list_teams(competition_code)` — team names as the results feed spells them.
 - `get_upcoming_fixtures(competition_code, days_ahead=14)` — scheduled matches.
+- `build_accumulator(target_odds=4.0, competition_code, days_ahead=3, objective)`
+  — "give me a 4.0 on this weekend's games": searches every selection across
+  every market for combinations that multiply out to the requested price,
+  ranked by the model's chance that all legs land. One leg per fixture.
 - `get_match_markets(home_team, away_team, competition_code)` — the full model
   probability sheet: 1X2, double chance, draw no bet, over/under from 0.5 to
   4.5, BTTS, clean sheets, win to nil, team totals, Asian handicaps, correct

@@ -11,7 +11,7 @@ from __future__ import annotations
 import difflib
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -21,9 +21,13 @@ from mcp.server.fastmcp import FastMCP
 from data import fixtures as fixtures_api
 from data import odds as odds_api
 from data import picklog
+from models import accumulator as accumulator_api
 from models import backtest as backtest_api
 from models import dixon_coles
 from schemas import (
+    Accumulator,
+    AccumulatorLeg,
+    AccumulatorPlan,
     BacktestResult,
     Fixture,
     LoggedPick,
@@ -280,52 +284,20 @@ def tune_time_decay(
     )
 
 
-_SELECTION_LABEL = {
-    "home": "{home} win",
-    "draw": "Draw",
-    "away": "{away} win",
-    "over": "Over {line} goals",
-    "under": "Under {line} goals",
-    "home_hcp": "{home} {line:+g} handicap",
-    "away_hcp": "{away} {line:+g} handicap",
-    "yes": "Both teams to score",
-    "no": "Both teams not to score",
-}
+def _collect_selections(
+    competition_code: str,
+    min_edge: float,
+    seasons_back: int,
+    target_book: str,
+    bankroll: Optional[float],
+    min_team_matches: int,
+    markets: str,
+) -> tuple[list[ValuePick], dict]:
+    """Every selection the model has a view on, with the price you could take.
 
-
-@mcp.tool()
-def scan_value(
-    competition_code: str = "PL",
-    min_edge: float = 0.03,
-    seasons_back: int = 3,
-    target_book: str = odds_api.DEFAULT_TARGET_BOOK,
-    bankroll: Optional[float] = None,
-    min_team_matches: int = 4,
-    markets: str = odds_api.DEFAULT_MARKETS,
-    log_picks: bool = True,
-) -> ValueScan:
-    """Check every upcoming fixture in a competition and list the model's disagreements.
-
-    For each match the model probability is compared to the de-vigged price from
-    a betting exchange (the honest baseline), and the price you could actually
-    take is read off the target book.
-
-    Args:
-        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
-        min_edge: Minimum model-minus-market gap to report, in probability
-            points (0.03 = three points).
-        seasons_back: Seasons of history to fit the model on.
-        target_book: Bookmaker whose price you would take.
-        bankroll: If given, adds a quarter-Kelly stake per pick in the same units.
-        min_team_matches: Skip fixtures where either side has fewer matches of
-            history than this. Shrinkage already pulls thin teams toward the
-            league average, so this only excludes the very sparsest.
-        markets: Odds API markets to pull. Each one costs a credit per request,
-            so the default is "h2h,totals"; add "btts" for both-teams-to-score.
-        log_picks: Record the picks so review_picks can score them later.
+    Shared by scan_value and build_accumulator: one fit, one odds pull, one set
+    of candidate selections.
     """
-    competition_code = competition_code.upper().strip()
-
     results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
     model = dixon_coles.get_model(competition_code, results)
     known = dixon_coles.model_teams(model)
@@ -461,6 +433,67 @@ def scan_value(
                         stake=round(bankroll * max(kelly, 0.0) / 4.0, 2) if bankroll else None,
                     )
                 )
+
+    return picks, {
+        "fixtures_checked": checked,
+        "sharp_books": sharp_books,
+        "thin": thin,
+        "events": len(events),
+    }
+
+
+_SELECTION_LABEL = {
+    "home": "{home} win",
+    "draw": "Draw",
+    "away": "{away} win",
+    "over": "Over {line} goals",
+    "under": "Under {line} goals",
+    "home_hcp": "{home} {line:+g} handicap",
+    "away_hcp": "{away} {line:+g} handicap",
+    "yes": "Both teams to score",
+    "no": "Both teams not to score",
+}
+
+
+@mcp.tool()
+def scan_value(
+    competition_code: str = "PL",
+    min_edge: float = 0.03,
+    seasons_back: int = 3,
+    target_book: str = odds_api.DEFAULT_TARGET_BOOK,
+    bankroll: Optional[float] = None,
+    min_team_matches: int = 4,
+    markets: str = odds_api.DEFAULT_MARKETS,
+    log_picks: bool = True,
+) -> ValueScan:
+    """Check every upcoming fixture in a competition and list the model's disagreements.
+
+    For each match the model probability is compared to the de-vigged price from
+    a betting exchange (the honest baseline), and the price you could actually
+    take is read off the target book.
+
+    Args:
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        min_edge: Minimum model-minus-market gap to report, in probability
+            points (0.03 = three points).
+        seasons_back: Seasons of history to fit the model on.
+        target_book: Bookmaker whose price you would take.
+        bankroll: If given, adds a quarter-Kelly stake per pick in the same units.
+        min_team_matches: Skip fixtures where either side has fewer matches of
+            history than this. Shrinkage already pulls thin teams toward the
+            league average, so this only excludes the very sparsest.
+        markets: Odds API markets to pull. Each one costs a credit per request,
+            so the default is "h2h,totals"; add "btts" for both-teams-to-score.
+        log_picks: Record the picks so review_picks can score them later.
+    """
+    competition_code = competition_code.upper().strip()
+    picks, meta = _collect_selections(
+        competition_code, min_edge, seasons_back, target_book, bankroll,
+        min_team_matches, markets,
+    )
+    checked, sharp_books, thin, events = (
+        meta["fixtures_checked"], meta["sharp_books"], meta["thin"], meta["events"]
+    )
 
     picks.sort(key=lambda pick: pick.expected_value_pct, reverse=True)
 
@@ -756,6 +789,149 @@ def get_match_markets(
         matches_used=len(results),
         notes=notes,
         **sheet,
+    )
+
+
+@mcp.tool()
+def build_accumulator(
+    target_odds: float = 4.0,
+    competition_code: str = "PL",
+    days_ahead: float = 3.0,
+    tolerance_pct: float = 10.0,
+    min_legs: int = 2,
+    max_legs: int = 6,
+    objective: str = "probability",
+    max_results: int = 5,
+    seasons_back: int = 3,
+    target_book: str = odds_api.DEFAULT_TARGET_BOOK,
+    markets: str = odds_api.DEFAULT_MARKETS,
+) -> AccumulatorPlan:
+    """Build multi-leg bets whose combined odds land near a target price.
+
+    Answers "give me a 4.0 on this weekend's games" by searching every selection
+    the model has a view on - match result, over/under, handicap - for
+    combinations that multiply out to roughly the requested price, then ranking
+    them by how likely the model thinks they all are.
+
+    Only one leg per fixture is ever used: two selections from the same match are
+    correlated, and multiplying their probabilities would overstate the chance of
+    the bet landing.
+
+    Args:
+        target_odds: Combined decimal odds you want, e.g. 4.0.
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        days_ahead: Only include fixtures kicking off within this many days.
+        tolerance_pct: How far from the target is acceptable, in percent.
+        min_legs / max_legs: Bounds on the number of selections.
+        objective: "probability" picks the combination most likely to land;
+            "value" picks the one with the best expected return.
+        max_results: How many alternative accumulators to return.
+        seasons_back: Seasons of history to fit the model on.
+        target_book: Bookmaker whose price you would take.
+        markets: Odds API markets to pull.
+    """
+    competition_code = competition_code.upper().strip()
+    if objective not in ("probability", "value"):
+        raise ValueError('objective must be "probability" or "value"')
+
+    picks, meta = _collect_selections(
+        competition_code,
+        min_edge=-1.0,  # every selection is a candidate, not just the value ones
+        seasons_back=seasons_back,
+        target_book=target_book,
+        bankroll=None,
+        min_team_matches=4,
+        markets=markets,
+    )
+
+    cutoff = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    candidates = [
+        {
+            "fixture": pick.match,
+            "match": pick.match,
+            "kickoff": pick.kickoff,
+            "selection": pick.selection,
+            "price": pick.price,
+            "price_book": pick.price_book,
+            "model_prob": pick.model_prob,
+            "fair_prob": pick.fair_prob,
+            "edge": pick.edge,
+        }
+        for pick in picks
+        if now <= pick.kickoff <= cutoff
+    ]
+
+    built = accumulator_api.build(
+        candidates,
+        target_odds=target_odds,
+        tolerance_pct=tolerance_pct,
+        min_legs=min_legs,
+        max_legs=max_legs,
+        objective=objective,
+        max_results=max_results,
+    )
+
+    accumulators = [
+        Accumulator(
+            legs=[
+                AccumulatorLeg(
+                    match=leg["match"],
+                    kickoff=leg["kickoff"],
+                    selection=leg["selection"],
+                    price=leg["price"],
+                    price_book=leg["price_book"],
+                    model_prob=leg["model_prob"],
+                    fair_prob=leg["fair_prob"],
+                    edge=leg["edge"],
+                )
+                for leg in entry["legs"]
+            ],
+            leg_count=len(entry["legs"]),
+            combined_odds=round(entry["combined_odds"], 3),
+            model_success_pct=entry["model_success"] * 100.0,
+            market_success_pct=entry["market_success"] * 100.0,
+            fair_odds=round(entry["fair_odds"], 3),
+            expected_value_pct=entry["expected_value_pct"],
+        )
+        for entry in built
+    ]
+
+    notes = [
+        "Model success is the chance every leg lands, on the model's numbers. It "
+        "assumes the legs are independent - they are from different matches, but "
+        "conditions common to a matchday still correlate them a little.",
+        "Compare model success to market success: if the market rates the "
+        "combination higher than the model does, the model is not finding value "
+        "here, it is just finding long odds.",
+    ]
+    if accumulators:
+        typical_legs = accumulators[0].leg_count
+        margin = accumulator_api.margin_compounding(typical_legs)
+        notes.append(
+            f"A {typical_legs}-leg bet carries roughly {margin:.0f}% of bookmaker "
+            "margin, because each leg's cut multiplies. This is why accumulators "
+            "are usually worse value than the same selections bet singly."
+        )
+    else:
+        notes.append(
+            "No combination landed within tolerance. Widen tolerance_pct, raise "
+            "max_legs, or extend days_ahead."
+        )
+
+    return AccumulatorPlan(
+        competition=competition_code,
+        target_odds=target_odds,
+        tolerance_pct=tolerance_pct,
+        objective=objective,
+        fixtures_available=meta["fixtures_checked"],
+        selections_available=len(candidates),
+        accumulators=accumulators,
+        margin_warning_pct=(
+            accumulator_api.margin_compounding(accumulators[0].leg_count)
+            if accumulators else None
+        ),
+        notes=notes,
     )
 
 

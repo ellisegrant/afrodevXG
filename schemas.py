@@ -284,3 +284,51 @@ class MarketSheet(BaseModel):
 
     matches_used: int = 0
     notes: list[str] = Field(default_factory=list)
+
+
+class AccumulatorLeg(BaseModel):
+    match: str
+    kickoff: str
+    selection: str
+    price: float
+    price_book: str
+    model_prob: float
+    fair_prob: float
+    edge: float
+
+
+class Accumulator(BaseModel):
+    """One multi-leg bet close to the requested price."""
+
+    legs: list[AccumulatorLeg]
+    leg_count: int
+    combined_odds: float
+    model_success_pct: float = Field(
+        ..., description="Model's probability that every leg lands, in percent."
+    )
+    market_success_pct: float = Field(
+        ..., description="The same, using de-vigged market probabilities."
+    )
+    fair_odds: float = Field(
+        ..., description="Price at which this bet would break even on the model's numbers."
+    )
+    expected_value_pct: float = Field(
+        ..., description="Return per unit staked if the model is correct."
+    )
+
+
+class AccumulatorPlan(BaseModel):
+    """Candidate accumulators for a requested target price."""
+
+    competition: str
+    target_odds: float
+    tolerance_pct: float
+    objective: str
+    fixtures_available: int
+    selections_available: int
+    accumulators: list[Accumulator]
+    margin_warning_pct: Optional[float] = Field(
+        None,
+        description="Approximate bookmaker margin carried by a bet of this many legs.",
+    )
+    notes: list[str] = Field(default_factory=list)
