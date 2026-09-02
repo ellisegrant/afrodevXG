@@ -181,10 +181,20 @@ shots, player goalscorers, and anything in-play.
 
 Walk-forward RPS over recent seasons (lower is better):
 
-| League | Model | Base-rate baseline |
-| --- | --- | --- |
-| Premier League (248 matches) | 0.2063 | 0.2258 |
-| La Liga (247 matches) | 0.2095 | 0.2226 |
+| League | Model | Base-rate baseline | Gain |
+| --- | --- | --- | --- |
+| Serie A (249 matches) | **0.1941** | 0.2393 | 18.9% |
+| Bundesliga (247 matches) | **0.1956** | 0.2318 | 15.6% |
+| Premier League (248 matches) | 0.2063 | 0.2258 | 8.6% |
+| La Liga (247 matches) | 0.2076 | 0.2226 | 6.7% |
+
+**The model is far better in Serie A and the Bundesliga than in England or
+Spain.** At 0.194 and 0.196 those two are in the range a bookmaker operates in;
+the Premier League and La Liga are not close. Part of that gap is that the
+Italian and German baselines are worse, so there is more room to improve on
+them — but the absolute scores are genuinely lower too. Weight scanning
+accordingly, and treat a large edge in La Liga, the weakest fit, with the most
+suspicion.
 
 **The model family barely matters.** All six penaltyblog goal models were
 backtested on the same 98 PL matches and landed within 0.0012 RPS of each other
