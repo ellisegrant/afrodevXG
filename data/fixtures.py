@@ -181,6 +181,22 @@ def get_recent_results(competition_code: str, seasons_back: int = 3) -> list[dic
     return results
 
 
+
+def get_season_results(competition_code: str, season: int) -> list[dict]:
+    """Finished matches for one specific season."""
+    competition_code = competition_code.upper().strip()
+    ttl = _CURRENT_SEASON_TTL if season == current_season_start() else _FINISHED_SEASON_TTL
+    payload = _get(
+        f"/competitions/{competition_code}/matches",
+        {"status": "FINISHED", "season": season},
+        cache_key=f"fd_results_{competition_code}_{season}",
+        ttl=ttl,
+    )
+    results = _parse_matches(payload)
+    results.sort(key=lambda match: match["date"])
+    return results
+
+
 def get_upcoming_fixtures(
     competition_code: str, days_ahead: int = 14
 ) -> list[dict]:

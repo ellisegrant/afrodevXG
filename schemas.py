@@ -130,6 +130,16 @@ class BacktestResult(BaseModel):
         None, description="Mean total goals actually scored."
     )
     training_goals_mean: Optional[float] = None
+
+    # Season-holdout runs only.
+    train_season: Optional[int] = None
+    test_season: Optional[int] = None
+    unknown_teams: list[str] = Field(
+        default_factory=list,
+        description="Teams in the test block with no history in the training block.",
+    )
+    first_test_date: Optional[str] = None
+    last_test_date: Optional[str] = None
     baseline_rates: dict[str, float]
     calibration: list[CalibrationBucket]
     notes: list[str] = Field(default_factory=list)

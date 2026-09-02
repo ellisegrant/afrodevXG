@@ -78,6 +78,9 @@ mcp dev server.py
   — every upcoming fixture where the model disagrees with the exchange, with
   the target book's price, the best price anywhere, expected value and an
   optional quarter-Kelly stake.
+- `backtest_season_start(competition_code, train_season, test_season)` — fit on
+  one whole season and predict the next, which is how the tool is used in
+  August: no current-season data at all.
 - `backtest_model(competition_code, test_matches=100, seasons_back=3, xi=0.0018)`
   — walk-forward scoring on matches the model never saw: Ranked Probability
   Score against a base-rate baseline, plus a calibration table.
@@ -195,6 +198,27 @@ Italian and German baselines are worse, so there is more room to improve on
 them — but the absolute scores are genuinely lower too. Weight scanning
 accordingly, and treat a large edge in La Liga, the weakest fit, with the most
 suspicion.
+
+**Predicting a new season from the last one works, on a small sample.** Fitted
+on 2025/26 alone and asked to price the opening two weeks of 2026/27 - no
+current-season data at all, so transfers and summer form are invisible:
+
+| League | Matches | Model | Baseline | Skipped |
+| --- | --- | --- | --- | --- |
+| Premier League | 15 | 0.1881 | 0.2320 | 5 |
+| Serie A | 14 | 0.1546 | 0.2595 | 6 |
+| Bundesliga | 6 | 0.1335 | 0.1979 | 3 |
+| La Liga | 22 | 0.2008 | 0.2349 | 8 |
+| **Pooled** | **57** | **0.1790** | **0.2363** | **22** |
+
+24% better than the base rate, and nominally better than the walk-forward runs.
+Do not take that at face value: 57 matches gives a standard error around 0.02,
+so the gap is under three standard errors, and the per-league samples of 6 to 22
+are far too small to rank leagues by. Run it again in December.
+
+The structural finding is the skipped column: **22 of 79 fixtures could not be
+priced at all**, because promoted teams have no top-flight history. At the start
+of a season roughly a quarter of the card is invisible to the model.
 
 **The goals markets are not a source of edge, and are off by default.**
 Over/under 2.5 and both-teams-to-score were scored by Brier across four leagues

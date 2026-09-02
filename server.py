@@ -1163,5 +1163,70 @@ def list_key_players(
     ]
 
 
+@mcp.tool()
+def backtest_season_start(
+    competition_code: str = "PL",
+    train_season: Optional[int] = None,
+    test_season: Optional[int] = None,
+) -> BacktestResult:
+    """Fit on one whole season and predict the next one, with nothing in between.
+
+    This is the hardest honest test and the one that matches how the tool is
+    actually being used right now: at the start of a season the model has no
+    current-season data at all, so transfers, new managers and summer form are
+    invisible to it. Promoted teams cannot be priced and are reported.
+
+    Args:
+        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        train_season: Season to learn from, by starting year. Defaults to last.
+        test_season: Season to predict. Defaults to the current one.
+    """
+    competition_code = competition_code.upper().strip()
+    test_season = test_season or fixtures_api.current_season_start()
+    train_season = train_season if train_season is not None else test_season - 1
+
+    train = fixtures_api.get_season_results(competition_code, train_season)
+    test = fixtures_api.get_season_results(competition_code, test_season)
+
+    report = backtest_api.holdout(train, test)
+
+    notes = [
+        f"Trained on {train_season}/{str(train_season + 1)[-2:]} only "
+        f"({report['matches_trained_on']} matches), predicting "
+        f"{test_season}/{str(test_season + 1)[-2:]}.",
+        "The model sees nothing from the season it is predicting: no transfers, "
+        "no new managers, no current form.",
+        "RPS scores the match result; Brier scores the goals markets. Both are "
+        "compared to simply using last season's base rates.",
+    ]
+    if report["unknown_teams"]:
+        notes.append(
+            f"{report['matches_skipped']} matches skipped - promoted teams with no "
+            f"top-flight history: {', '.join(report['unknown_teams'])}."
+        )
+    if report["matches_scored"] < 60:
+        notes.append(
+            f"Only {report['matches_scored']} matches scored. Early-season samples "
+            "are small; a difference of a few hundredths of RPS here is noise."
+        )
+
+    return BacktestResult(
+        competition=competition_code,
+        train_season=train_season,
+        test_season=test_season,
+        notes=notes,
+        **{key: report[key] for key in (
+            "xi", "matches_trained_on", "matches_scored", "matches_skipped",
+            "model_rps", "baseline_rps", "rps_improvement_pct", "hit_rate",
+            "baseline_rates", "calibration", "unknown_teams",
+            "first_test_date", "last_test_date",
+            "totals_brier", "totals_baseline_brier", "predicted_over_rate",
+            "actual_over_rate", "btts_brier", "btts_baseline_brier",
+            "predicted_btts_rate", "actual_btts_rate", "predicted_goals_mean",
+            "actual_goals_mean", "training_goals_mean",
+        )},
+    )
+
+
 if __name__ == "__main__":
     mcp.run()

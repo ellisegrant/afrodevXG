@@ -198,7 +198,19 @@ def walk_forward(
     if not records:
         raise dixon_coles.ModelError("no test matches could be scored")
 
-    rates = base_rates(ordered[:split])
+    return {
+        "xi": xi,
+        "model_name": model_name,
+        "shrinkage_k": shrinkage_k,
+        "matches_trained_on": split,
+        "matches_skipped": skipped,
+        **summarise(records, ordered[:split]),
+    }
+
+
+def summarise(records: list[dict[str, Any]], training: list[dict]) -> dict[str, Any]:
+    """Turn scored predictions into the numbers a report needs."""
+    rates = base_rates(training)
     baseline = float(
         np.mean(
             [rps(rates["home"], rates["draw"], rates["away"], record["outcome"])
@@ -206,21 +218,13 @@ def walk_forward(
         )
     )
     model_rps = float(np.mean([record["rps"] for record in records]))
-
     hits = sum(
         1 for record in records
         if max(record["probs"], key=record["probs"].get) == record["outcome"]
     )
 
-    goals = _score_goals_markets(records, ordered[:split])
-
     return {
-        "xi": xi,
-        "model_name": model_name,
-        "shrinkage_k": shrinkage_k,
-        "matches_trained_on": split,
         "matches_scored": len(records),
-        "matches_skipped": skipped,
         "model_rps": model_rps,
         "baseline_rps": baseline,
         "rps_improvement_pct": (baseline - model_rps) / baseline * 100.0 if baseline else 0.0,
@@ -228,7 +232,90 @@ def walk_forward(
         "hit_rate": hits / len(records),
         "calibration": _calibration(records),
         "worst_calls": sorted(records, key=lambda r: -r["rps"])[:5],
-        **goals,
+        **_score_goals_markets(records, training),
+    }
+
+
+def _predict_record(model, match: dict) -> Optional[dict[str, Any]]:
+    """Score one match against a fitted model, or None if it cannot be priced."""
+    try:
+        prediction = dixon_coles.predict_match(model, match["home"], match["away"])
+    except dixon_coles.ModelError:
+        return None
+
+    probs = {
+        "home": prediction["home_win"],
+        "draw": prediction["draw"],
+        "away": prediction["away_win"],
+    }
+    total_goals = match["home_goals"] + match["away_goals"]
+    return {
+        "date": match.get("date", ""),
+        "home": match["home"],
+        "away": match["away"],
+        "probs": probs,
+        "outcome": outcome_of(match),
+        "rps": rps(probs["home"], probs["draw"], probs["away"], outcome_of(match)),
+        "p_over": prediction["over_2_5"],
+        "over_happened": 1.0 if total_goals > 2.5 else 0.0,
+        "p_btts": prediction["btts_yes"],
+        "btts_happened": 1.0 if (match["home_goals"] > 0 and match["away_goals"] > 0) else 0.0,
+        "predicted_goals": prediction["home_xg"] + prediction["away_xg"],
+        "actual_goals": total_goals,
+    }
+
+
+def holdout(
+    train: list[dict],
+    test: list[dict],
+    xi: float = dixon_coles.DEFAULT_XI,
+    model_name: str = "dixon_coles",
+    shrinkage_k: float = dixon_coles.SHRINKAGE_K,
+) -> dict[str, Any]:
+    """Fit on one block of matches and predict another, untouched, block.
+
+    Harder than walk-forward and closer to real use at the start of a season:
+    the model gets no information at all from the period it is predicting, so
+    transfers, new managers and summer form are invisible to it. Teams absent
+    from the training block cannot be priced and are reported as skipped.
+    """
+    if not train or not test:
+        raise dixon_coles.ModelError("both a training and a test block are needed")
+
+    model = dixon_coles.fit_model(
+        train, xi=xi, model_name=model_name, shrinkage_k=shrinkage_k
+    )
+    known = set(dixon_coles.model_teams(model))
+
+    records, skipped, unknown_teams = [], 0, set()
+    for match in sorted(test, key=lambda match: match.get("date", "")):
+        missing = [team for team in (match["home"], match["away"]) if team not in known]
+        if missing:
+            unknown_teams.update(missing)
+            skipped += 1
+            continue
+        record = _predict_record(model, match)
+        if record is None:
+            skipped += 1
+            continue
+        records.append(record)
+
+    if not records:
+        raise dixon_coles.ModelError(
+            "no test matches could be scored - none of these teams appear in the "
+            "training block"
+        )
+
+    return {
+        "xi": xi,
+        "model_name": model_name,
+        "shrinkage_k": shrinkage_k,
+        "matches_trained_on": len(train),
+        "matches_skipped": skipped,
+        "unknown_teams": sorted(unknown_teams),
+        "first_test_date": records[0]["date"],
+        "last_test_date": records[-1]["date"],
+        **summarise(records, train),
     }
 
 
