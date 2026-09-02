@@ -141,7 +141,9 @@ def _parse_matches(payload: dict) -> list[dict]:
     return results
 
 
-def get_recent_results(competition_code: str, seasons_back: int = 3) -> list[dict]:
+def get_recent_results(
+    competition_code: str, seasons_back: int = 3, include_second_tier: bool = False
+) -> list[dict]:
     """Finished matches for a competition, most recent `seasons_back` seasons.
 
     Returns dicts of {home, away, home_goals, away_goals, date}, oldest first.

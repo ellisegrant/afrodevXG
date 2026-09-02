@@ -89,6 +89,12 @@ def fit_model(
     teams_home = [match["home"] for match in results]
     teams_away = [match["away"] for match in results]
     weights = _time_weights([match.get("date", "") for match in results], xi)
+    # A match can carry its own weight - second-division games count for less.
+    explicit = np.array([float(match.get("weight", 1.0)) for match in results])
+    if weights is None:
+        weights = explicit if not np.allclose(explicit, 1.0) else None
+    else:
+        weights = weights * explicit
 
     started = time.monotonic()
     try:

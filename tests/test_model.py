@@ -70,3 +70,32 @@ def test_model_cache_returns_the_same_object(synthetic_results):
     first = dixon_coles.get_model("TEST_CACHE", synthetic_results)
     second = dixon_coles.get_model("TEST_CACHE", synthetic_results)
     assert first is second
+
+
+def test_merging_divisions_tags_and_weights_the_lower_tier():
+    from models import promotion
+
+    top = [{"home": "A", "away": "B", "home_goals": 1, "away_goals": 0, "date": "2025-01-02"}]
+    second = [{"home": "C", "away": "D", "home_goals": 2, "away_goals": 2, "date": "2025-01-01"}]
+    merged = promotion.merge_divisions(top, second, second_weight=0.5)
+
+    assert [match["date"] for match in merged] == ["2025-01-01", "2025-01-02"]
+    assert merged[0]["tier"] == 2 and merged[0]["weight"] == 0.5
+    assert merged[1]["tier"] == 1 and "weight" not in merged[1]
+
+
+def test_bridge_teams_are_those_in_both_divisions():
+    from models import promotion
+
+    top = [{"home": "A", "away": "B", "home_goals": 1, "away_goals": 0, "date": "2025-01-02"}]
+    second = [{"home": "B", "away": "C", "home_goals": 2, "away_goals": 2, "date": "2024-01-01"}]
+    assert promotion.bridge_teams(top, second) == {"B"}
+
+
+def test_explicit_match_weights_reach_the_fit(synthetic_results):
+    """A weighted match must change the fit, or the second-tier discount is a no-op."""
+    weighted = [dict(match, weight=0.2) if match["home"] == "Team A" else match
+                for match in synthetic_results]
+    plain = dixon_coles.predict_match(dixon_coles.fit_model(synthetic_results), "Team A", "Team J")
+    discounted = dixon_coles.predict_match(dixon_coles.fit_model(weighted), "Team A", "Team J")
+    assert plain["home_win"] != pytest.approx(discounted["home_win"])

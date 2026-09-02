@@ -199,6 +199,25 @@ them — but the absolute scores are genuinely lower too. Weight scanning
 accordingly, and treat a large edge in La Liga, the weakest fit, with the most
 suspicion.
 
+**Second-division form does not price promoted teams.** Fitting the Championship
+alongside the Premier League - two seasons of each, so that relegated and
+promoted clubs link the divisions onto one scale - makes every fixture priceable
+(380 of 380 against 306). But the 74 newly priceable matches score **0.269 RPS
+against a 0.214 base-rate baseline**, at every second-tier weight from 0.3 to
+1.0. Fixtures between established teams are unchanged.
+
+So the coverage is real and the accuracy is not: those predictions are worse
+than guessing. Promotion looks like a genuine discontinuity - a squad that just
+went up is rebuilt over the summer, and its Championship results describe a
+different team. `include_second_tier` exists and defaults to off. The right
+behaviour is what the scanner already did: leave promoted teams alone until they
+have played.
+
+Note the trap in the first version of this test: within a single season no club
+plays in both divisions, so the two leagues are disconnected and the promoted
+teams' ratings float on an arbitrary scale. That run scored 0.27 to 0.36. The
+bridge only exists across seasons.
+
 **Predicting a new season from the last one works, on a small sample.** Fitted
 on 2025/26 alone and asked to price the opening two weeks of 2026/27 - no
 current-season data at all, so transfers and summer form are invisible:

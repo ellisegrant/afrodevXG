@@ -26,6 +26,7 @@ from models import accumulator as accumulator_api
 from models import availability
 from models import backtest as backtest_api
 from models import dixon_coles
+from models import promotion
 from schemas import (
     AbsenceImpact,
     Accumulator,
@@ -1168,6 +1169,7 @@ def backtest_season_start(
     competition_code: str = "PL",
     train_season: Optional[int] = None,
     test_season: Optional[int] = None,
+    include_second_tier: bool = False,
 ) -> BacktestResult:
     """Fit on one whole season and predict the next one, with nothing in between.
 
@@ -1180,6 +1182,10 @@ def backtest_season_start(
         competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
         train_season: Season to learn from, by starting year. Defaults to last.
         test_season: Season to predict. Defaults to the current one.
+        include_second_tier: Fit the division below alongside the top flight so
+            promoted teams can be priced at all. Off by default: it makes every
+            fixture priceable but those extra predictions score worse than the
+            league base rate, so they are coverage without accuracy.
     """
     competition_code = competition_code.upper().strip()
     test_season = test_season or fixtures_api.current_season_start()
@@ -1187,6 +1193,20 @@ def backtest_season_start(
 
     train = fixtures_api.get_season_results(competition_code, train_season)
     test = fixtures_api.get_season_results(competition_code, test_season)
+
+    second_code = promotion.SECOND_TIER.get(competition_code)
+    if include_second_tier and second_code:
+        # Two seasons of the tier below: enough for teams that have gone up or
+        # come down to link the divisions onto one scale.
+        second = []
+        for season in (train_season, train_season - 1):
+            try:
+                second += fixtures_api.get_season_results(second_code, season)
+            except fixtures_api.FootballDataError as exc:
+                log.warning("no %s data for %s: %s", second_code, season, exc)
+        if second:
+            bridges = promotion.bridge_teams(train, second)
+            train = promotion.merge_divisions(train, second)
 
     report = backtest_api.holdout(train, test)
 
@@ -1199,10 +1219,21 @@ def backtest_season_start(
         "RPS scores the match result; Brier scores the goals markets. Both are "
         "compared to simply using last season's base rates.",
     ]
+    if include_second_tier and second_code:
+        notes.append(
+            f"Fitted alongside {second_code}. Promoted teams are priced from their "
+            "record there, with those matches weighted at "
+            f"{promotion.DEFAULT_SECOND_TIER_WEIGHT}. "
+            + (
+                f"{len(bridges)} teams appear in both divisions and set the scale "
+                "between them."
+                if second else "No second-tier data was available."
+            )
+        )
     if report["unknown_teams"]:
         notes.append(
-            f"{report['matches_skipped']} matches skipped - promoted teams with no "
-            f"top-flight history: {', '.join(report['unknown_teams'])}."
+            f"{report['matches_skipped']} matches skipped - teams with no history in "
+            f"either division: {', '.join(report['unknown_teams'])}."
         )
     if report["matches_scored"] < 60:
         notes.append(
