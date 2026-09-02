@@ -332,7 +332,8 @@ def backtest_model(
     report = backtest_api.walk_forward(results, test_matches=test_matches, xi=xi)
 
     notes = [
-        "RPS is Ranked Probability Score: lower is better, 0 is perfect.",
+        "RPS is Ranked Probability Score: lower is better, 0 is perfect. It scores "
+        "the match result; the goals markets are scored separately by Brier score.",
         "Baseline is the empirical home/draw/away rate over the training window.",
         "Bookmaker comparison is not included: historical odds need a paid "
         "Odds API plan, so only live fixtures can be compared to the market.",
@@ -342,6 +343,16 @@ def backtest_model(
             f"{report['matches_skipped']} matches skipped - a team had no prior history."
         )
 
+    goal_gap = report["predicted_goals_mean"] - report["actual_goals_mean"]
+    if abs(goal_gap) >= 0.10:
+        direction = "more" if goal_gap > 0 else "fewer"
+        notes.append(
+            f"The model expected {abs(goal_gap):.2f} {direction} goals per match than "
+            f"were actually scored ({report['predicted_goals_mean']:.2f} against "
+            f"{report['actual_goals_mean']:.2f}). Treat its over/under picks with "
+            "suspicion: a systematic bias will point them all the same way."
+        )
+
     return BacktestResult(
         competition=competition_code,
         notes=notes,
@@ -349,6 +360,10 @@ def backtest_model(
             "xi", "matches_trained_on", "matches_scored", "matches_skipped",
             "model_rps", "baseline_rps", "rps_improvement_pct", "hit_rate",
             "baseline_rates", "calibration",
+            "totals_brier", "totals_baseline_brier", "predicted_over_rate",
+            "actual_over_rate", "btts_brier", "btts_baseline_brier",
+            "predicted_btts_rate", "actual_btts_rate", "predicted_goals_mean",
+            "actual_goals_mean", "training_goals_mean",
         )},
     )
 
@@ -394,6 +409,7 @@ def _collect_many(
     bankroll: Optional[float],
     min_team_matches: int,
     markets: str,
+    include_goals_markets: bool = False,
 ) -> tuple[list[ValuePick], dict]:
     """Selections from several competitions, merged.
 
@@ -408,7 +424,7 @@ def _collect_many(
         try:
             found, one = _collect_selections(
                 competition, min_edge, seasons_back, target_book, bankroll,
-                min_team_matches, markets,
+                min_team_matches, markets, include_goals_markets,
             )
         except (fixtures_api.FootballDataError, dixon_coles.ModelError) as exc:
             # One league being unavailable should not sink the whole scan.
@@ -435,6 +451,7 @@ def _collect_selections(
     bankroll: Optional[float],
     min_team_matches: int,
     markets: str,
+    include_goals_markets: bool = False,
 ) -> tuple[list[ValuePick], dict]:
     """Every selection the model has a view on, with the price you could take.
 
@@ -494,7 +511,7 @@ def _collect_selections(
                 },
             )
         ]
-        if market.get("totals"):
+        if include_goals_markets and market.get("totals"):
             line = market["totals"]["line"]
             if line == 2.5:
                 over, under = prediction["over_2_5"], prediction["under_2_5"]
@@ -515,7 +532,7 @@ def _collect_selections(
                 ({"home_hcp": home_cover, "away_hcp": away_cover}, block)
             )
 
-        if market.get("btts"):
+        if include_goals_markets and market.get("btts"):
             market_blocks.append(
                 (
                     {"yes": prediction["btts_yes"], "no": 1.0 - prediction["btts_yes"]},
@@ -606,7 +623,8 @@ def scan_value(
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
     bankroll: Optional[float] = None,
     min_team_matches: int = 4,
-    markets: str = odds_api.DEFAULT_MARKETS,
+    include_goals_markets: bool = False,
+    markets: Optional[str] = None,
     log_picks: bool = True,
 ) -> ValueScan:
     """Check every upcoming fixture in a competition and list the model's disagreements.
@@ -626,14 +644,18 @@ def scan_value(
         min_team_matches: Skip fixtures where either side has fewer matches of
             history than this. Shrinkage already pulls thin teams toward the
             league average, so this only excludes the very sparsest.
-        markets: Odds API markets to pull. Each one costs a credit per request,
-            so the default is "h2h,totals"; add "btts" for both-teams-to-score.
+        include_goals_markets: Include over/under and both-teams-to-score picks.
+            Off by default: backtesting shows the model's goals probabilities score
+            worse than simply using the league's base rate, in all four leagues
+            tested, and it under-predicts goals systematically.
+        markets: Override which Odds API markets to pull. Each costs a credit.
         log_picks: Record the picks so review_picks can score them later.
     """
     competitions = _parse_competitions(competition_code)
+    markets = markets or ("h2h,spreads,totals" if include_goals_markets else "h2h,spreads")
     picks, meta = _collect_many(
         competitions, min_edge, seasons_back, target_book, bankroll,
-        min_team_matches, markets,
+        min_team_matches, markets, include_goals_markets,
     )
     checked, sharp_books, thin, events = (
         meta["fixtures_checked"], meta["sharp_books"], meta["thin"], meta["events"]
@@ -645,6 +667,13 @@ def scan_value(
     notes = [
         "Edge is model probability minus the exchange's de-vigged probability.",
         "Expected value is what the target book's price actually returns. A pick can show a positive edge and negative expected value when that book prices it worse than the exchange - those are not bets, they are near-misses.",
+        "Goals markets are excluded by default: the model's over/under and BTTS "
+        "probabilities backtest worse than the league base rate. Pass "
+        "include_goals_markets=True to see them anyway."
+        if not include_goals_markets else
+        "Goals markets are included at your request. They backtest worse than the "
+        "league base rate in every league tested, and the model under-predicts "
+        "goals, which points those picks systematically toward the under.",
         "Backtesting shows this model beats a base-rate baseline but not the "
         "market, so treat any edge as unproven rather than as a signal.",
     ]
@@ -965,7 +994,8 @@ def build_accumulator(
     max_results: int = 5,
     seasons_back: int = 3,
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
-    markets: str = odds_api.DEFAULT_MARKETS,
+    include_goals_markets: bool = False,
+    markets: Optional[str] = None,
 ) -> AccumulatorPlan:
     """Build multi-leg bets whose combined odds land near a target price.
 
@@ -991,12 +1021,15 @@ def build_accumulator(
         max_results: How many alternative accumulators to return.
         seasons_back: Seasons of history to fit the model on.
         target_book: Bookmaker whose price you would take.
-        markets: Odds API markets to pull.
+        include_goals_markets: Allow over/under legs. Off by default because
+            those probabilities backtest worse than the league base rate.
+        markets: Override which Odds API markets to pull.
     """
     competitions = _parse_competitions(competition_code)
     if objective not in ("probability", "value"):
         raise ValueError('objective must be "probability" or "value"')
 
+    markets = markets or ("h2h,spreads,totals" if include_goals_markets else "h2h,spreads")
     picks, meta = _collect_many(
         competitions,
         min_edge=-1.0,  # every selection is a candidate, not just the value ones
@@ -1005,6 +1038,7 @@ def build_accumulator(
         bankroll=None,
         min_team_matches=4,
         markets=markets,
+        include_goals_markets=include_goals_markets,
     )
 
     cutoff = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).isoformat()

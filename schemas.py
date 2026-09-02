@@ -107,6 +107,29 @@ class BacktestResult(BaseModel):
     )
 
     hit_rate: float = Field(..., description="Share of matches where the most likely outcome won.")
+
+    # Goals markets, scored separately from the match result.
+    totals_brier: Optional[float] = Field(
+        None, description="Brier score for over/under 2.5. Lower is better."
+    )
+    totals_baseline_brier: Optional[float] = None
+    predicted_over_rate: Optional[float] = Field(
+        None, description="Average probability the model gave to over 2.5."
+    )
+    actual_over_rate: Optional[float] = Field(
+        None, description="How often over 2.5 actually landed."
+    )
+    btts_brier: Optional[float] = None
+    btts_baseline_brier: Optional[float] = None
+    predicted_btts_rate: Optional[float] = None
+    actual_btts_rate: Optional[float] = None
+    predicted_goals_mean: Optional[float] = Field(
+        None, description="Mean total goals the model expected per match."
+    )
+    actual_goals_mean: Optional[float] = Field(
+        None, description="Mean total goals actually scored."
+    )
+    training_goals_mean: Optional[float] = None
     baseline_rates: dict[str, float]
     calibration: list[CalibrationBucket]
     notes: list[str] = Field(default_factory=list)

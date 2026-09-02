@@ -77,6 +77,53 @@ def _calibration(records: list[dict], bins: int = 5) -> list[dict[str, Any]]:
     return table
 
 
+def _brier(probabilities: list[float], outcomes: list[float]) -> float:
+    """Mean squared error of a two-way probability. Lower is better."""
+    return float(
+        np.mean([(p - o) ** 2 for p, o in zip(probabilities, outcomes)])
+    )
+
+
+def _score_goals_markets(
+    records: list[dict[str, Any]], training: list[dict]
+) -> dict[str, Any]:
+    """Score over/under 2.5 and both-teams-to-score, and check for goal bias.
+
+    Half the scanner's picks are goals markets, and until now nothing measured
+    them. A model can rank match results well and still be systematically wrong
+    about how many goals a game will contain.
+    """
+    over_rate = (
+        sum(1 for match in training if match["home_goals"] + match["away_goals"] > 2.5)
+        / max(len(training), 1)
+    )
+    btts_rate = (
+        sum(1 for match in training if match["home_goals"] > 0 and match["away_goals"] > 0)
+        / max(len(training), 1)
+    )
+    training_goals = (
+        sum(match["home_goals"] + match["away_goals"] for match in training)
+        / max(len(training), 1)
+    )
+
+    over_outcomes = [record["over_happened"] for record in records]
+    btts_outcomes = [record["btts_happened"] for record in records]
+
+    return {
+        "totals_brier": _brier([r["p_over"] for r in records], over_outcomes),
+        "totals_baseline_brier": _brier([over_rate] * len(records), over_outcomes),
+        "predicted_over_rate": float(np.mean([r["p_over"] for r in records])),
+        "actual_over_rate": float(np.mean(over_outcomes)),
+        "btts_brier": _brier([r["p_btts"] for r in records], btts_outcomes),
+        "btts_baseline_brier": _brier([btts_rate] * len(records), btts_outcomes),
+        "predicted_btts_rate": float(np.mean([r["p_btts"] for r in records])),
+        "actual_btts_rate": float(np.mean(btts_outcomes)),
+        "predicted_goals_mean": float(np.mean([r["predicted_goals"] for r in records])),
+        "actual_goals_mean": float(np.mean([r["actual_goals"] for r in records])),
+        "training_goals_mean": training_goals,
+    }
+
+
 def walk_forward(
     results: list[dict],
     test_matches: int = 100,
@@ -128,6 +175,7 @@ def walk_forward(
             "draw": prediction["draw"],
             "away": prediction["away_win"],
         }
+        total_goals = match["home_goals"] + match["away_goals"]
         records.append(
             {
                 "date": match.get("date", ""),
@@ -136,6 +184,14 @@ def walk_forward(
                 "probs": probs,
                 "outcome": outcome_of(match),
                 "rps": rps(probs["home"], probs["draw"], probs["away"], outcome_of(match)),
+                # Goals markets, scored separately: half the scanner's picks are
+                # over/under, and nothing was measuring them.
+                "p_over": prediction["over_2_5"],
+                "over_happened": 1.0 if total_goals > 2.5 else 0.0,
+                "p_btts": prediction["btts_yes"],
+                "btts_happened": 1.0 if (match["home_goals"] > 0 and match["away_goals"] > 0) else 0.0,
+                "predicted_goals": prediction["home_xg"] + prediction["away_xg"],
+                "actual_goals": total_goals,
             }
         )
 
@@ -156,6 +212,8 @@ def walk_forward(
         if max(record["probs"], key=record["probs"].get) == record["outcome"]
     )
 
+    goals = _score_goals_markets(records, ordered[:split])
+
     return {
         "xi": xi,
         "model_name": model_name,
@@ -170,6 +228,7 @@ def walk_forward(
         "hit_rate": hits / len(records),
         "calibration": _calibration(records),
         "worst_calls": sorted(records, key=lambda r: -r["rps"])[:5],
+        **goals,
     }
 
 

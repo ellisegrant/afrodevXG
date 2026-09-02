@@ -196,6 +196,23 @@ them — but the absolute scores are genuinely lower too. Weight scanning
 accordingly, and treat a large edge in La Liga, the weakest fit, with the most
 suspicion.
 
+**The goals markets are not a source of edge, and are off by default.**
+Over/under 2.5 and both-teams-to-score were scored by Brier across four leagues
+(250 walk-forward matches each). The model lost to the league base rate on
+over/under in all four, and on BTTS in three of four:
+
+| League | Over 2.5 Brier | Base rate | Predicted over | Actual over |
+| --- | --- | --- | --- | --- |
+| Premier League | 0.2564 | 0.2490 | 52.6% | 54.0% |
+| Serie A | 0.2590 | 0.2491 | 44.4% | 47.0% |
+| Bundesliga | 0.2313 | 0.2308 | 59.1% | 64.4% |
+| La Liga | 0.2520 | 0.2515 | 47.8% | 53.0% |
+
+It also under-predicts goals in every league — which is exactly why an early
+scan returned eleven unders and two overs. That was bias, not opportunity.
+`scan_value` and `build_accumulator` now exclude these markets unless you pass
+`include_goals_markets=True`.
+
 **The model family barely matters.** All six penaltyblog goal models were
 backtested on the same 98 PL matches and landed within 0.0012 RPS of each other
 (Weibull copula 0.2043, Dixon-Coles 0.2052, plain Poisson 0.2052). Weibull
