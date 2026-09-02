@@ -57,7 +57,7 @@ mcp dev server.py
 
 ## Tools
 
-- `get_match_probabilities(home_team, away_team, competition_code="PL", seasons_back=3, include_odds=True)`
+- `get_match_probabilities(home_team, away_team, competition_code="PL", seasons_back=3, include_odds=True, home_absentees=[], away_absentees=[])`
   — 1X2, over/under 2.5, BTTS, expected goals, plus de-vigged market
   probabilities and the model-minus-market edge.
 - `list_competitions()` — competition codes (PL, PD, BL1, SA, FL1, …).
@@ -67,6 +67,8 @@ mcp dev server.py
   — "give me a 4.0 on this weekend's games": searches every selection across
   every market for combinations that multiply out to the requested price,
   ranked by the model's chance that all legs land. One leg per fixture.
+- `list_key_players(team, competition_code)` — who carries a team's scoring,
+  as a share of its open-play goals.
 - `get_match_markets(home_team, away_team, competition_code)` — the full model
   probability sheet: 1X2, double chance, draw no bet, over/under from 0.5 to
   4.5, BTTS, clean sheets, win to nil, team totals, Asian handicaps, correct
@@ -118,6 +120,29 @@ Raw implied probability is `1 / decimal_odds`; across 1X2 those sum to more
 than 1 (the bookmaker's overround). `devig()` divides each by the sum so they
 total 1.0, giving fair market probabilities. The edge is then
 `model_probability − fair_market_probability`.
+
+## Missing players
+
+The fit already reflects a team's best players, because they played in the
+matches it learned from. Naming an absentee scales that team's expected scoring
+down by their share of its open-play goals:
+
+```
+attack multiplier = 1 - goal_share x (1 - replacement_level)
+```
+
+Penalties are excluded from the share, since penalty duty transfers to whoever
+is on the pitch. `replacement_level` (default 0.5) is how much of the absent
+player's output a stand-in is assumed to provide.
+
+Man City without Haaland, who has 29% of their open-play goals: scoring scaled
+to 0.85, win probability 61.9% to 55.4%, over 2.5 goals 50.2% to 43.2%.
+
+**This is the one part of the project that cannot be backtested.** The free tier
+carries no historical lineups, so there is no way to check the adjustment
+against matches that were actually played without a key player. Every other
+choice here was measured; this one is reasoned. There is also no injury feed on
+the free tier, so who is missing has to be supplied by you.
 
 ## Market coverage
 

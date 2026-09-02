@@ -21,15 +21,19 @@ from mcp.server.fastmcp import FastMCP
 from data import fixtures as fixtures_api
 from data import odds as odds_api
 from data import picklog
+from data import players as players_api
 from models import accumulator as accumulator_api
+from models import availability
 from models import backtest as backtest_api
 from models import dixon_coles
 from schemas import (
+    AbsenceImpact,
     Accumulator,
     AccumulatorLeg,
     AccumulatorPlan,
     BacktestResult,
     Fixture,
+    KeyPlayer,
     LoggedPick,
     MarketSheet,
     MatchProbabilities,
@@ -83,6 +87,45 @@ def _resolve_team(name: str, known: list[str]) -> Optional[str]:
     return best if best_score >= 0.7 else None
 
 
+
+def _absence_impact(
+    competition_code: str,
+    results: list[dict],
+    team: str,
+    names: list[str],
+    seasons_back: int,
+    replacement_level: float,
+) -> Optional[AbsenceImpact]:
+    """Turn a list of missing players into a scoring multiplier for their team."""
+    if not names:
+        return None
+
+    shares = players_api.goal_shares(competition_code, results, seasons_back=seasons_back)
+    found: list[KeyPlayer] = []
+    unmatched: list[str] = []
+
+    for name in names:
+        record = players_api.find_player(shares, name, team=team)
+        if record is None:
+            unmatched.append(name)
+            continue
+        found.append(KeyPlayer(**{key: record[key] for key in (
+            "player", "team", "position", "goals", "penalties",
+            "open_play_goals", "team_goals", "goal_share", "played",
+        )}))
+
+    multiplier = availability.attack_multiplier(
+        [player.goal_share for player in found], replacement_level=replacement_level
+    )
+    return AbsenceImpact(
+        team=team,
+        absentees=found,
+        unmatched=unmatched,
+        attack_multiplier=multiplier,
+        replacement_level=replacement_level,
+    )
+
+
 @mcp.tool()
 def get_match_probabilities(
     home_team: str,
@@ -91,6 +134,9 @@ def get_match_probabilities(
     seasons_back: int = 3,
     include_odds: bool = True,
     target_book: str = odds_api.DEFAULT_TARGET_BOOK,
+    home_absentees: Optional[list[str]] = None,
+    away_absentees: Optional[list[str]] = None,
+    replacement_level: float = availability.DEFAULT_REPLACEMENT_LEVEL,
 ) -> MatchProbabilities:
     """Estimate match probabilities with a Dixon-Coles model and compare to the market.
 
@@ -101,6 +147,12 @@ def get_match_probabilities(
         seasons_back: How many seasons of results to fit on (3 is a good default).
         include_odds: Also fetch bookmaker odds and compute the value edge.
         target_book: Bookmaker whose price you could actually take (default betway).
+        home_absentees: Players missing for the home side, e.g. ["Haaland"].
+            Their share of the team's open-play goals is used to scale its
+            expected scoring down.
+        away_absentees: The same for the away side.
+        replacement_level: How much of an absent player's output a stand-in is
+            assumed to provide. 0.5 means half.
 
     Returns 1X2, over/under 2.5, BTTS and expected goals. The market comparison
     uses a betting exchange as the honest baseline (exchanges carry no margin)
@@ -135,7 +187,47 @@ def get_match_probabilities(
                 "reflects the league more than the team."
             )
 
-    prediction = dixon_coles.predict_match(model, home_resolved, away_resolved)
+    home_impact = _absence_impact(
+        competition_code, results, home_resolved, home_absentees or [],
+        seasons_back, replacement_level,
+    )
+    away_impact = _absence_impact(
+        competition_code, results, away_resolved, away_absentees or [],
+        seasons_back, replacement_level,
+    )
+
+    attack_scaling = {}
+    if home_impact:
+        attack_scaling[home_resolved] = home_impact.attack_multiplier
+    if away_impact:
+        attack_scaling[away_resolved] = away_impact.attack_multiplier
+
+    if attack_scaling:
+        with availability.adjusted(model, attack=attack_scaling):
+            prediction = dixon_coles.predict_match(model, home_resolved, away_resolved)
+        for impact in (home_impact, away_impact):
+            if impact is None:
+                continue
+            if impact.absentees:
+                missing = ", ".join(
+                    f"{p.player} ({p.goal_share:.0%} of goals)" for p in impact.absentees
+                )
+                notes.append(
+                    f"{impact.team} without {missing}: scoring scaled to "
+                    f"{impact.attack_multiplier:.2f} of normal."
+                )
+            if impact.unmatched:
+                notes.append(
+                    f"Not found in {impact.team}'s scoring data, so ignored: "
+                    + ", ".join(impact.unmatched)
+                )
+        notes.append(
+            "Absence adjustments cannot be backtested: the free data tier carries "
+            "no historical lineups. Treat them as a considered adjustment, not a "
+            "measured one."
+        )
+    else:
+        prediction = dixon_coles.predict_match(model, home_resolved, away_resolved)
 
     probabilities = MatchProbabilities(
         home_team=home_resolved,
@@ -143,6 +235,8 @@ def get_match_probabilities(
         competition=competition_code,
         matches_used=len(results),
         notes=notes,
+        home_absence_impact=home_impact,
+        away_absence_impact=away_impact,
         **prediction,
     )
 
@@ -933,6 +1027,34 @@ def build_accumulator(
         ),
         notes=notes,
     )
+
+
+@mcp.tool()
+def list_key_players(
+    team: str, competition_code: str = "PL", seasons_back: int = 3, top: int = 6
+) -> list[KeyPlayer]:
+    """Which players carry a team's scoring, and by how much.
+
+    Goal share excludes penalties, since penalty duty transfers to whoever is on
+    the pitch. Use these names with get_match_probabilities' absentee arguments.
+    """
+    competition_code = competition_code.upper().strip()
+    results = fixtures_api.get_recent_results(competition_code, seasons_back=seasons_back)
+    model = dixon_coles.get_model(competition_code, results)
+
+    resolved = _resolve_team(team, dixon_coles.model_teams(model))
+    if resolved is None:
+        raise ValueError(f"{team!r} is not a team in {competition_code}.")
+
+    return [
+        KeyPlayer(**{key: record[key] for key in (
+            "player", "team", "position", "goals", "penalties",
+            "open_play_goals", "team_goals", "goal_share", "played",
+        )})
+        for record in players_api.team_key_players(
+            competition_code, results, resolved, seasons_back=seasons_back, top=top
+        )
+    ]
 
 
 if __name__ == "__main__":

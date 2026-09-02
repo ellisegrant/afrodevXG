@@ -65,6 +65,9 @@ class MatchProbabilities(BaseModel):
     value_edge_draw: Optional[float] = None
     value_edge_away: Optional[float] = None
 
+    home_absence_impact: Optional["AbsenceImpact"] = None
+    away_absence_impact: Optional["AbsenceImpact"] = None
+
     notes: list[str] = Field(default_factory=list)
 
 
@@ -332,3 +335,33 @@ class AccumulatorPlan(BaseModel):
         description="Approximate bookmaker margin carried by a bet of this many legs.",
     )
     notes: list[str] = Field(default_factory=list)
+
+
+class KeyPlayer(BaseModel):
+    """A player's share of their team's open-play scoring."""
+
+    player: str
+    team: str
+    position: Optional[str] = None
+    goals: int
+    penalties: int
+    open_play_goals: int
+    team_goals: int
+    goal_share: float = Field(
+        ..., description="Share of the team's goals this player scored, excluding penalties."
+    )
+    played: int
+
+
+class AbsenceImpact(BaseModel):
+    """What leaving a player out does to a team's expected scoring."""
+
+    team: str
+    absentees: list[KeyPlayer]
+    unmatched: list[str] = Field(
+        default_factory=list, description="Names that could not be found in the scoring data."
+    )
+    attack_multiplier: float = Field(
+        ..., description="Expected goals are scaled by this. 0.85 means 15% fewer."
+    )
+    replacement_level: float
