@@ -378,6 +378,55 @@ def tune_time_decay(
     )
 
 
+def _parse_competitions(competition_code: str) -> list[str]:
+    """Accept one code or several: "PL" or "PL,PD,SA,BL1"."""
+    codes = [code.strip().upper() for code in competition_code.split(",") if code.strip()]
+    if not codes:
+        raise ValueError("no competition code given")
+    return codes
+
+
+def _collect_many(
+    competitions: list[str],
+    min_edge: float,
+    seasons_back: int,
+    target_book: str,
+    bankroll: Optional[float],
+    min_team_matches: int,
+    markets: str,
+) -> tuple[list[ValuePick], dict]:
+    """Selections from several competitions, merged.
+
+    Each competition costs its own odds request, and a cold run also refetches
+    results, so a four-league scan is appreciably slower and dearer than one.
+    """
+    picks: list[ValuePick] = []
+    meta = {"fixtures_checked": 0, "sharp_books": set(), "thin": set(), "events": 0}
+    failures: list[str] = []
+
+    for competition in competitions:
+        try:
+            found, one = _collect_selections(
+                competition, min_edge, seasons_back, target_book, bankroll,
+                min_team_matches, markets,
+            )
+        except (fixtures_api.FootballDataError, dixon_coles.ModelError) as exc:
+            # One league being unavailable should not sink the whole scan.
+            log.warning("skipping %s: %s", competition, exc)
+            failures.append(f"{competition}: {exc}")
+            continue
+        for pick in found:
+            pick.competition = competition
+        picks.extend(found)
+        meta["fixtures_checked"] += one["fixtures_checked"]
+        meta["sharp_books"] |= one["sharp_books"]
+        meta["thin"] |= one["thin"]
+        meta["events"] += one["events"]
+
+    meta["failures"] = failures
+    return picks, meta
+
+
 def _collect_selections(
     competition_code: str,
     min_edge: float,
@@ -567,7 +616,8 @@ def scan_value(
     take is read off the target book.
 
     Args:
-        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        competition_code: One code or several, comma separated: "PL" or
+            "PL,PD,SA,BL1". Each extra competition costs its own odds request.
         min_edge: Minimum model-minus-market gap to report, in probability
             points (0.03 = three points).
         seasons_back: Seasons of history to fit the model on.
@@ -580,14 +630,15 @@ def scan_value(
             so the default is "h2h,totals"; add "btts" for both-teams-to-score.
         log_picks: Record the picks so review_picks can score them later.
     """
-    competition_code = competition_code.upper().strip()
-    picks, meta = _collect_selections(
-        competition_code, min_edge, seasons_back, target_book, bankroll,
+    competitions = _parse_competitions(competition_code)
+    picks, meta = _collect_many(
+        competitions, min_edge, seasons_back, target_book, bankroll,
         min_team_matches, markets,
     )
     checked, sharp_books, thin, events = (
         meta["fixtures_checked"], meta["sharp_books"], meta["thin"], meta["events"]
     )
+    competition_code = ",".join(competitions)
 
     picks.sort(key=lambda pick: pick.expected_value_pct, reverse=True)
 
@@ -615,13 +666,29 @@ def scan_value(
             + ", ".join(sorted(thin))
             + f" - fewer than {min_team_matches} matches of history."
         )
+    if meta.get("failures"):
+        notes.append("Skipped competitions - " + " | ".join(meta["failures"]))
+    if len(competitions) > 1:
+        notes.append(
+            f"Scanned {len(competitions)} competitions. Each one costs its own odds "
+            "request, so a wide scan spends credits faster than a single league."
+        )
     if not events:
         notes.append("The odds feed returned no upcoming fixtures for this competition.")
 
     if log_picks and picks:
-        recorded = picklog.record(
-            competition_code, [pick.model_dump() for pick in picks]
-        )
+        added = skipped = 0
+        for competition in competitions:
+            batch = [
+                pick.model_dump() for pick in picks
+                if getattr(pick, "competition", competition) == competition
+            ]
+            if not batch:
+                continue
+            outcome = picklog.record(competition, batch)
+            added += outcome["added"]
+            skipped += outcome["skipped"]
+        recorded = {"added": added, "skipped": skipped}
         notes.append(
             f"Logged {recorded['added']} new picks "
             f"({recorded['skipped']} already recorded). Score them with review_picks."
@@ -913,7 +980,9 @@ def build_accumulator(
 
     Args:
         target_odds: Combined decimal odds you want, e.g. 4.0.
-        competition_code: football-data.org code (PL, PD, BL1, SA, FL1, ...).
+        competition_code: One code or several, comma separated: "PL" or
+            "PL,PD,SA,BL1". More leagues means more fixtures to choose from and
+            combinations that land closer to the target.
         days_ahead: Only include fixtures kicking off within this many days.
         tolerance_pct: How far from the target is acceptable, in percent.
         min_legs / max_legs: Bounds on the number of selections.
@@ -924,12 +993,12 @@ def build_accumulator(
         target_book: Bookmaker whose price you would take.
         markets: Odds API markets to pull.
     """
-    competition_code = competition_code.upper().strip()
+    competitions = _parse_competitions(competition_code)
     if objective not in ("probability", "value"):
         raise ValueError('objective must be "probability" or "value"')
 
-    picks, meta = _collect_selections(
-        competition_code,
+    picks, meta = _collect_many(
+        competitions,
         min_edge=-1.0,  # every selection is a candidate, not just the value ones
         seasons_back=seasons_back,
         target_book=target_book,
@@ -991,7 +1060,10 @@ def build_accumulator(
         for entry in built
     ]
 
-    notes = [
+    notes = []
+    if meta.get("failures"):
+        notes.append("Skipped competitions - " + " | ".join(meta["failures"]))
+    notes += [
         "Model success is the chance every leg lands, on the model's numbers. It "
         "assumes the legs are independent - they are from different matches, but "
         "conditions common to a matchday still correlate them a little.",
@@ -1014,7 +1086,7 @@ def build_accumulator(
         )
 
     return AccumulatorPlan(
-        competition=competition_code,
+        competition=",".join(competitions),
         target_odds=target_odds,
         tolerance_pct=tolerance_pct,
         objective=objective,

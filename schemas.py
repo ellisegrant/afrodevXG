@@ -140,6 +140,7 @@ class ValuePick(BaseModel):
     outcome: str = Field(
         ..., description="home, draw, away, over, under, yes or no."
     )
+    competition: Optional[str] = None
 
     model_prob: float
     fair_prob: float = Field(..., description="De-vigged probability from the sharp book.")

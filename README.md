@@ -74,6 +74,7 @@ mcp dev server.py
   4.5, BTTS, clean sheets, win to nil, team totals, Asian handicaps, correct
   score and expected points.
 - `scan_value(competition_code, min_edge=0.03, target_book="betway", bankroll=None)`
+  — `competition_code` takes one league or several: `"PL"` or `"PL,PD,SA,BL1"`.
   — every upcoming fixture where the model disagrees with the exchange, with
   the target book's price, the best price anywhere, expected value and an
   optional quarter-Kelly stake.
