@@ -43,6 +43,14 @@ SPORT_KEYS = {
 # Ordered by preference; the first one quoting a match wins.
 SHARP_BOOKS = ["betfair_ex_uk", "smarkets", "matchbook", "pinnacle", "betfair_sb_uk"]
 
+# A book's prices should imply a little over 100% once summed - that surplus is
+# its margin. An exchange sits near 1.02; a soft book near 1.06. Anything outside
+# this band is bad data, not a bargain: illiquid exchange markets in particular
+# come back with prices that imply 200%+ and would read as an enormous edge.
+MIN_OVERROUND = 0.98
+MAX_SHARP_OVERROUND = 1.12
+MAX_TWO_WAY_OVERROUND = 1.10
+
 # The book you would actually place the bet with - the price you can really get.
 DEFAULT_TARGET_BOOK = "betway"
 
@@ -393,6 +401,42 @@ def _book_prices(event: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return books
 
 
+def overround(prices: dict[str, float]) -> float:
+    """Sum of implied probabilities. 1.05 means a 5% margin."""
+    try:
+        return sum(1.0 / float(price) for price in prices.values())
+    except (TypeError, ZeroDivisionError):
+        return float("inf")
+
+
+def _usable(prices: dict[str, float], maximum: float) -> bool:
+    """Reject prices that cannot be a real market."""
+    if not prices or any(not price or price <= 1.0 for price in prices.values()):
+        return False
+    return MIN_OVERROUND <= overround(prices) <= maximum
+
+
+def _choose_sharp(
+    books: dict[str, dict[str, Any]], market: str, maximum: float
+) -> Optional[str]:
+    """First preferred exchange whose prices are sane, else the tightest book.
+
+    Preference order alone is not enough: an exchange with no liquidity still
+    returns prices, and they are nonsense.
+    """
+    for key in SHARP_BOOKS:
+        book = books.get(key)
+        if book and _usable(book.get(market) or {}, maximum):
+            return key
+
+    valid = {
+        key: overround(book[market])
+        for key, book in books.items()
+        if _usable(book.get(market) or {}, maximum)
+    }
+    return min(valid, key=valid.get) if valid else None
+
+
 def _best_prices(
     books: dict[str, dict[str, Any]], market: str = "odds"
 ) -> dict[str, dict[str, Any]]:
@@ -445,14 +489,20 @@ def _side_market(
     if not quoting:
         return None
 
-    sharp_key = next((key for key in SHARP_BOOKS if key in quoting), None)
+    sharp_key = _choose_sharp(quoting, market, MAX_TWO_WAY_OVERROUND)
     if sharp_key is None:
-        outcomes = next(iter(quoting.values()))[market].keys()
+        sane = [
+            book for book in quoting.values()
+            if _usable(book.get(market) or {}, 1.20)
+        ]
+        if not sane:
+            return None
+        outcomes = sane[0][market].keys()
         averaged = {
-            outcome: sum(book[market][outcome] for book in quoting.values()) / len(quoting)
+            outcome: sum(book[market][outcome] for book in sane) / len(sane)
             for outcome in outcomes
         }
-        sharp = {"title": f"average of {len(quoting)} books", market: averaged}
+        sharp = {"title": f"average of {len(sane)} books", market: averaged}
     else:
         sharp = quoting[sharp_key]
 
@@ -495,15 +545,25 @@ def market_from_event(
 
     target_book = (target_book or DEFAULT_TARGET_BOOK).lower()
 
-    sharp_key = next((key for key in SHARP_BOOKS if key in books), None)
+    sharp_key = _choose_sharp(books, "odds", MAX_SHARP_OVERROUND)
     if sharp_key is None:
-        # No exchange quoting this match: fall back to the average of all books,
-        # which carries every book's margin and is a weaker baseline.
+        # Nothing quoting sane prices: average the books that at least look like
+        # a market. This carries every book's margin and is a weaker baseline.
+        sane = [
+            book for book in books.values()
+            if _usable(book.get("odds") or {}, 1.25)
+        ]
+        if not sane:
+            log.warning(
+                "no usable 1X2 prices for %s v %s",
+                event.get("home_team"), event.get("away_team"),
+            )
+            return None
         averaged = {
-            outcome: sum(book["odds"][outcome] for book in books.values()) / len(books)
+            outcome: sum(book["odds"][outcome] for book in sane) / len(sane)
             for outcome in ("home", "draw", "away")
         }
-        sharp = {"title": f"average of {len(books)} books", "odds": averaged}
+        sharp = {"title": f"average of {len(sane)} books", "odds": averaged}
     else:
         sharp = books[sharp_key]
 

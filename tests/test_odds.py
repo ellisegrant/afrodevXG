@@ -70,3 +70,64 @@ def test_totals_line_is_chosen_by_consensus(odds_event):
 def test_event_matching_tolerates_name_variants(odds_event):
     assert odds._match_event([odds_event], "Arsenal FC", "Chelsea FC") is odds_event
     assert odds._match_event([odds_event], "Liverpool", "Everton") is None
+
+
+def test_overround_measures_the_margin():
+    assert odds.overround({"home": 2.0, "away": 2.0}) == pytest.approx(1.0)
+    assert odds.overround({"home": 1.9, "away": 1.9}) == pytest.approx(1.0526, abs=1e-3)
+
+
+def _illiquid_event():
+    """A real shape from the feed: an exchange with no liquidity quoting nonsense.
+
+    Betfair returned 1.27 / 1.10 / 1.09 on Atalanta v Cagliari - an implied 261%.
+    De-vigged blindly that made a heavy favourite look like a 30% shot and
+    manufactured a 31-point edge.
+    """
+    return {
+        "home_team": "Atalanta BC",
+        "away_team": "Cagliari",
+        "commence_time": "2030-01-01T15:00:00Z",
+        "bookmakers": [
+            {"key": "betfair_ex_uk", "title": "Betfair", "markets": [
+                {"key": "h2h", "outcomes": [
+                    {"name": "Atalanta BC", "price": 1.27},
+                    {"name": "Cagliari", "price": 1.10},
+                    {"name": "Draw", "price": 1.09},
+                ]}]},
+            {"key": "betway", "title": "Betway", "markets": [
+                {"key": "h2h", "outcomes": [
+                    {"name": "Atalanta BC", "price": 1.50},
+                    {"name": "Cagliari", "price": 6.50},
+                    {"name": "Draw", "price": 4.20},
+                ]}]},
+        ],
+    }
+
+
+def test_illiquid_exchange_prices_are_rejected():
+    market = odds.market_from_event(_illiquid_event(), target_book="betway")
+    assert market["sharp_book"] != "Betfair"
+    # The favourite must come back a favourite, not a 30% shot.
+    assert market["fair"]["home"] > 0.55
+    assert market["sharp_overround_pct"] < 12.0
+
+
+def test_a_sane_exchange_is_still_preferred(odds_event):
+    market = odds.market_from_event(odds_event, target_book="betway")
+    assert market["sharp_book"] == "Betfair"
+
+
+def test_event_with_no_usable_prices_returns_nothing():
+    broken = {
+        "home_team": "A", "away_team": "B", "commence_time": "2030-01-01T15:00:00Z",
+        "bookmakers": [
+            {"key": "betway", "title": "Betway", "markets": [
+                {"key": "h2h", "outcomes": [
+                    {"name": "A", "price": 1.01},
+                    {"name": "B", "price": 1.01},
+                    {"name": "Draw", "price": 1.01},
+                ]}]},
+        ],
+    }
+    assert odds.market_from_event(broken, target_book="betway") is None

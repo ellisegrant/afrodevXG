@@ -168,6 +168,21 @@ value.
 Out of reach entirely, because neither data source carries them: corners, cards,
 shots, player goalscorers, and anything in-play.
 
+## Sanity checks on prices
+
+A bookmaker's prices should sum to a little over 100% once converted to
+probabilities — that surplus is its margin. An exchange sits near 102%, a soft
+book near 106%.
+
+Illiquid exchange markets return prices that sum to far more. Betfair quoted
+1.27 / 1.10 / 1.09 on Atalanta v Cagliari — an implied 261%. De-vigged blindly,
+that turned a 1.50 favourite into a 30% shot and produced the largest "edge" the
+scanner has ever reported. Prices outside a plausible band are now rejected, and
+the next sane book is used instead.
+
+The lesson generalises: the biggest edge in a list is far more often a data
+fault than an opportunity.
+
 ## Caveats
 
 - Historical bookmaker odds need a paid Odds API plan, so `backtest_model`
