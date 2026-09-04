@@ -98,25 +98,76 @@ The suite runs entirely offline - no API keys, no network - so it is safe to run
 anywhere and cannot flake on a rate limit. GitHub Actions runs it on every push
 against Python 3.11, 3.12 and 3.13.
 
-## Claude Desktop
+## Installing it (anyone, any account)
 
-Add to `claude_desktop_config.json`
-(`~/Library/Application Support/Claude/` on macOS), then restart Claude Desktop:
+This is a local server. Each person runs their own copy on their own machine
+with their own free API keys — nothing is shared, and no account of mine is
+involved. Claude launches it as a child process over stdio, so it cannot be
+hosted for someone else or added by URL.
+
+**1. Clone and install**
+
+```bash
+git clone https://github.com/ellisegrant/afrodevXG.git
+cd afrodevXG
+python3 -m venv venv
+source venv/bin/activate            # Windows: venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp .env.example .env                # Windows: copy .env.example .env
+```
+
+Python 3.11 to 3.13 are what CI covers. On Python 3.14 with macOS on Intel,
+`cryptography` has no wheel and pip will try to build it from source, which
+needs Rust — the pin in `requirements.txt` handles that.
+
+**2. Get two free keys and put them in `.env`**
+
+- `FOOTBALL_DATA_API_KEY` — https://www.football-data.org/client/register
+- `ODDS_API_KEY` — https://the-odds-api.com/
+
+**3. Register it with Claude**
+
+*Claude Desktop* — edit `claude_desktop_config.json`, then fully quit and reopen
+the app:
+
+| OS | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
 ```json
 {
   "mcpServers": {
-    "football-analytics": {
-      "command": "/Users/ellisegrantboamah/Desktop/afrodevXG/venv/bin/python",
-      "args": ["/Users/ellisegrantboamah/Desktop/afrodevXG/server.py"],
-      "env": {
-        "FOOTBALL_DATA_API_KEY": "your-key",
-        "ODDS_API_KEY": "your-key"
-      }
+    "afrodevXG": {
+      "command": "/ABSOLUTE/PATH/TO/afrodevXG/venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/TO/afrodevXG/server.py"]
     }
   }
 }
 ```
+
+Both paths must be absolute — Claude does not launch the server from the
+project directory. On Windows use
+`C:\\path\\to\\afrodevXG\\venv\\Scripts\\python.exe`. Keys are read from `.env`
+next to `server.py`, so they do not go in this file; if you would rather pass
+them here, add an `"env"` object instead.
+
+*Claude Code* — one command, no JSON:
+
+```bash
+claude mcp add afrodevXG /ABSOLUTE/PATH/TO/afrodevXG/venv/bin/python /ABSOLUTE/PATH/TO/afrodevXG/server.py
+```
+
+**4. Check it works**
+
+Ask Claude "what competitions can you analyse?" — it should call
+`list_competitions` and name twelve. If nothing happens, the log says why:
+`~/Library/Logs/Claude/mcp-server-afrodevXG.log` on macOS.
+
+Each person's free tier is their own: roughly 10 football-data requests a minute
+and 500 odds credits a month. A scan costs one credit per market per
+competition, and everything is cached on disk.
 
 ## How the value number works
 
